@@ -1,11 +1,11 @@
 // Mail actions (docs/phone-api.md, Actions). One tap = one Idempotency-Key; a request that got no answer (PC
 // unreachable, timeout) is sent again with the SAME key and body, so the PC never does it twice. Undo is a new action
 // with a new key: the `undo` block sent back to POST /v1/messages/act exactly as it came.
-import { api, ApiError, newKey, type ActResult, type UndoBlock } from './api.ts';
+import { api, ApiError, newKey, type ActResult, type UndoBlock, type Unsubscribe } from './api.ts';
 
 const RETRIES = 2;
 
-async function withRetry<T>(send: (key: string) => Promise<T>): Promise<T> {
+export async function withRetry<T>(send: (key: string) => Promise<T>): Promise<T> {
   const key = newKey();
   for (let attempt = 0; ; attempt++) {
     try {
@@ -37,4 +37,16 @@ export function undoOf(r: ActResult | null | undefined): UndoBlock | null {
   if (!u || typeof u !== 'object' || typeof u.action !== 'string' || !Array.isArray(u.messageIds) || !u.messageIds.length) return null;
   if (!u.messageIds.every((n) => Number.isSafeInteger(n) && n > 0)) return null;
   return u;   // sent back exactly as the PC gave it
+}
+
+export interface UnsubResult { ok: boolean; status?: string; unsubscribe?: Unsubscribe }
+
+/** The owner's decision, already confirmed (Face ID) natively: native lets this one request out. A retry after a lost
+ *  answer reuses the key, so it passes as a replay and the PC never unsubscribes twice. */
+export function unsubscribeSender(id: number): Promise<UnsubResult> {
+  return withRetry((key) => api.post<UnsubResult>(`/v1/unsubscribes/${id}/unsubscribe`, {}, { idempotencyKey: key }));
+}
+
+export function keepSender(id: number): Promise<UnsubResult> {
+  return withRetry((key) => api.post<UnsubResult>(`/v1/unsubscribes/${id}/keep`, {}, { idempotencyKey: key }));
 }

@@ -5,6 +5,7 @@
 // the pairing link (QR code, paste box) is read natively too; the page only ever sees the PC's address.
 // In a desktop browser (tests, dev) there is no native side: the wrappers below have dev fallbacks, and production
 // builds fail closed (no confirmation, no pairing, links don't open, nothing is copied).
+import { pcNow } from './clock.ts';
 
 export type BridgeOp = 'hello' | 'request' | 'pair' | 'unpair' | 'lock' | 'confirm' | 'openExternal' | 'copy' | 'push';
 /** Every op the page uses; NativeBridge.ops must list the same ones (test/ios.test.ts checks). */
@@ -251,8 +252,11 @@ export async function confirmDecision(d: Decision): Promise<ConfirmBlock | null>
     } catch { return null; }
   }
   if (!__DEV_TRANSPORT__) return null;   // a production browser never confirms anything
-  // tests/dev only: the shape native gives, without a check
-  const at = Math.floor(Date.now() / 1000);
+  // tests/dev only: the shape native gives, without a check. A test can play the owner's answer through
+  // window.__gupmailDevConfirm(decision) -> true (passed) | false (declined, failed, cancelled).
+  const shim = (window as unknown as { __gupmailDevConfirm?: (d: Decision) => unknown }).__gupmailDevConfirm;
+  if (shim && (await shim({ ...d })) !== true) return null;
+  const at = pcNow();
   return d.action === 'send'
     ? { action: 'send', draftId: d.draftId, version: d.version, method: 'face_id', at }
     : { action: 'unsubscribe', unsubscribeId: d.unsubscribeId, method: 'face_id', at };

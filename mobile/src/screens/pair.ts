@@ -1,6 +1,7 @@
 // Pair with your PC: scan the QR code GupMail on the PC shows (native camera) or paste its link (native paste box).
 // The token stays in the app's native side; this screen only ever sees the PC's address, which the owner checks
 // before tapping Pair. A gupmail://pair link that opened the app lands here filled in, and pairs only on that tap.
+import { api, ApiError } from '../api.ts';
 import * as bridge from '../bridge.ts';
 import { append, h, replace } from '../dom.ts';
 import { icon } from '../icons.ts';
@@ -13,9 +14,28 @@ type State =
   | { s: 'start'; note?: string }
   | { s: 'found'; pc: bridge.PcInfo; source: string }
   | { s: 'pairing'; pc: bridge.PcInfo }
-  | { s: 'paired'; pc: bridge.PcInfo }
+  | { s: 'paired'; pc: bridge.PcInfo; note?: string }
   | { s: 'failed'; pc: bridge.PcInfo; message: string; retry: boolean }
   | { s: 'unsupported' };
+
+/** docs/phone-api.md "Then rotate at once": right after pairing, swap the code's key for one only this phone has
+ *  (native keeps it; the page only learns that it rotated). Tried again while the PC can't be reached or asks to
+ *  wait; if it never works, the pairing keeps working on the code's key and the Paired screen says so. */
+async function rotateKey(): Promise<boolean> {
+  for (const wait of [0, 2_000, 8_000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      await api.post('/v1/auth/rotate', {});
+      return true;
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.kind !== 'unreachable' && e.kind !== 'rate_limited')) return false;
+    }
+  }
+  return false;
+}
+
+const ROTATE_FAILED = 'The app couldn\'t swap the code for a key of its own, so the code on the PC\'s screen still works for this '
+  + 'pairing. When the PC is reachable, pair again with a new code (More, This phone, Pair again).';
 
 const CANCEL_NOTES: Record<string, string> = {
   camera_denied: 'The camera is off for GupMail. Turn it on in the iPhone Settings (GupMail, Camera), or paste the link instead.',
@@ -61,7 +81,11 @@ export const pair: Screen = {
       if (r.state === 'paired') {
         forgetEventCursor();
         set({ s: 'paired', pc: r.pc });
-        loadStatus().catch(() => { /* Today shows its own state */ });
+        // the new key's first use (the status load) makes the code on the PC's screen useless
+        void rotateKey().then((rotated) => {
+          if (!rotated) set({ s: 'paired', pc: r.pc, note: ROTATE_FAILED });
+          loadStatus().catch(() => { /* Today shows its own state */ });
+        });
         checkAlerts().catch(() => { /* This phone has the button too */ });
       } else if (r.state === 'failed') {
         // a code the PC refused is gone; one it couldn't be asked about can be tried again
@@ -109,6 +133,7 @@ export const pair: Screen = {
         case 'paired':
           return h('div', { class: 'state' }, icon('check'), h('h2', null, 'Paired'),
             h('p', null, 'This phone is paired with ', h('strong', null, where(st.pc)), '.'),
+            st.note ? h('p', { class: 'pair-note', role: 'alert', 'data-rotate': 'failed' }, st.note) : null,
             h('button', { class: 'btn primary', type: 'button', onclick: () => ctx.navigate('#/today') }, 'Open Today'));
         case 'failed':
           return h('div', { class: 'view' },

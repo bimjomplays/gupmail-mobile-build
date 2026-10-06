@@ -1,13 +1,16 @@
-// This phone: which PC it's paired with (the PC's full Tailscale name, from the app's native side), whether alerts
-// (Apple push) work, lock now, pair again, unpair. When the PC says 401 this is where "Pairing lost" sends you, so it must work without the PC: it
-// explains instead of showing the generic error.
+// This phone: which PC it's paired with (the PC's full Tailscale name and address, from the app's native side), when it
+// last heard from this phone, whether alerts (Apple push) work, the Face ID state, Lock now, pair again, and Forget this phone
+// (a confirm sheet, then the app forgets the PC and tells it, then any half-finished pairing is dropped). When the PC says
+// 401 this is where "Pairing lost" sends you, so it must work without the PC: it explains instead of showing the generic error.
 import { api, ApiError, type Status } from '../api.ts';
 import * as bridge from '../bridge.ts';
 import { append, h, replace } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { forgetEventCursor } from '../events.ts';
-import { loadStatus } from '../state.ts';
+import { ago } from '../format.ts';
+import { loadStatus, pcNow } from '../state.ts';
 import { pushText } from '../ui/alerts.ts';
+import { sheet } from '../ui/sheet.ts';
 import { errorText, loadView } from '../ui/view.ts';
 import { head, type Screen } from './types.ts';
 
@@ -79,6 +82,15 @@ function alertsCard(first: bridge.PushStatus, pcRegistered: boolean | undefined)
   return { el: card, dispose: () => { dead = true; clearTimeout(poll); } };
 }
 
+/** The Face ID line: what the lock uses on this iPhone (iOS owns the setting; the app only reports it). */
+function faceIdText(n: bridge.Hello | null): string {
+  if (!n) return 'Shown inside the GupMail app.';
+  const way = n.biometry === 'face_id' ? 'Face ID' : n.biometry === 'touch_id' ? 'Touch ID' : null;
+  return way
+    ? `${way} is on. GupMail locks when you leave it, and asks ${way} before sending or unsubscribing.`
+    : 'Face ID isn\'t set up on this iPhone, so GupMail uses the iPhone\'s passcode. Set it up in iOS Settings, Face ID & Passcode.';
+}
+
 export const phone: Screen = {
   tab: 'more',
   mount(host, ctx) {
@@ -94,28 +106,32 @@ export const phone: Screen = {
     append(host, head('This phone', { back: '#/more', navigate: ctx.navigate }));
     append(host, [body]);
 
-    /** Unpair, click twice: the first tap arms it for a few seconds (no pop-up confirm in this app). */
-    const unpairButton = (view: HTMLElement) => {
-      const btn = h('button', { class: 'btn danger', type: 'button' }, 'Unpair this phone');
-      let armed = false;
-      btn.addEventListener('click', async () => {
-        if (!armed) {
-          armed = true;
-          btn.textContent = 'Tap again to unpair';
-          timer = setTimeout(() => { armed = false; btn.textContent = 'Unpair this phone'; }, ARM_MS);
-          return;
-        }
-        clearTimeout(timer);
+    /** Forget this phone: a sheet says what happens, then the app forgets the PC (Keychain, then the PC is told) and drops
+     *  any pairing link that was waiting. */
+    const forgetButton = (view: HTMLElement) => {
+      const btn = h('button', { class: 'btn danger', type: 'button' }, 'Forget this phone');
+      const forget = async () => {
         btn.disabled = true;
         const r = await bridge.unpair();
+        await bridge.pairCancel();
         forgetEventCursor();
-        if (!r) { btn.disabled = false; armed = false; btn.textContent = 'Unpair this phone'; return; }
+        if (!r) { btn.disabled = false; return; }
         replace(view, h('div', { class: 'card', role: 'status', 'data-unpaired': r.pcForgot ? 'pc' : 'phone' },
-          h('span', { class: 'k' }, 'Unpaired'),
+          h('span', { class: 'k' }, 'Forgotten'),
           h('p', null, r.pcForgot
             ? 'This phone forgot the PC, and the PC no longer accepts it.'
             : 'This phone forgot the PC, but the PC couldn\'t be told. Forget this phone in GupMail on the PC too (Settings, Phone).')),
         pairButton('Pair with your PC', true));
+      };
+      btn.addEventListener('click', () => {
+        const close = sheet({
+          title: 'Forget this phone?',
+          body: [
+            h('p', null, 'This phone forgets your PC, and the PC stops accepting it. Nothing is deleted from your mail.'),
+            h('p', { class: 'hint' }, 'To use GupMail here again, make a new pairing code on the PC (Settings, Phone) and pair again.'),
+          ],
+          actions: [h('button', { class: 'btn danger', type: 'button', onclick: () => { close(); void forget(); } }, 'Forget this phone')],
+        });
       });
       return btn;
     };
@@ -154,7 +170,7 @@ export const phone: Screen = {
               pc ? h('p', { class: 'pc-host' }, pc.host) : null, h('p', null, t.body)),
             h('div', { class: 'actions' },
               pairButton(none ? 'Pair with your PC' : 'Pair again', true),
-              r.native?.paired ? unpairButton(view) : null),
+              r.native?.paired ? forgetButton(view) : null),
             lockBtn, lockNote,
           ]);
           return view;
@@ -166,18 +182,22 @@ export const phone: Screen = {
             h('span', { class: 'k' }, 'Paired with'),
             pc ? h('p', { class: 'pc-host' }, pc.host) : null,
             h('dl', { class: 'kv' },
+              pc ? h('dt', null, 'Address') : null, pc ? h('dd', { class: 'mono', 'data-pc-url': '' }, `https://${pc.host}${pc.port && pc.port !== 443 ? `:${pc.port}` : ''}`) : null,
               h('dt', null, 'This phone'), h('dd', null, p?.name || 'Unnamed'),
               h('dt', null, 'Paired'), h('dd', null, when(p?.pairedAt ?? pc?.pairedAt)),
-              h('dt', null, 'Last seen'), h('dd', null, when(p?.lastSeenAt)),
+              h('dt', null, 'Last contact'), h('dd', { 'data-last-contact': '' }, ago(p?.lastSeenAt, pcNow()), p?.lastSeenAt ? h('small', { class: 'hint' }, ` (${when(p.lastSeenAt)})`) : null),
+              h('dt', null, 'Alerts'), h('dd', null, p?.push?.registered ? 'Apple push is on' : 'Apple push is off'),
               h('dt', null, 'API'), h('dd', null, `v${r.status.api}`))),
           r.push ? alerts(r.push, p?.push?.registered) : null,
+          h('div', { class: 'card', 'data-faceid': r.native?.biometry ?? 'unknown' },
+            h('span', { class: 'k' }, 'Face ID'), h('p', null, faceIdText(r.native))),
           h('div', { class: 'list' }, ...r.status.accounts.map((a) =>
             h('div', { class: 'row' },
               h('span', { class: `dot ${a.status === 'ok' ? 'ok' : a.status === 'syncing' || a.status === 'new' ? 'warn' : 'bad'}` }),
               h('span', { class: 'grow' }, a.name, h('small', null, a.email)),
               h('span', { class: 'end' }, a.status)))),
           lockBtn, lockNote,
-          r.native ? h('div', { class: 'actions' }, pairButton('Pair again', false), r.native.paired ? unpairButton(view) : null) : null,
+          r.native ? h('div', { class: 'actions' }, pairButton('Pair again', false), r.native.paired ? forgetButton(view) : null) : null,
         ]);
         return view;
       },

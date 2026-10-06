@@ -26,6 +26,9 @@ const PATHS = {
   image: ['M4 4h16v16H4z', 'M4 16l5-5 4 4 3-3 4 4', 'M15 8.5h.01'],
   alert: ['M12 3l10 18H2z', 'M12 10v4', 'M12 17.5h.01'],
   user: ['M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8z', 'M4 21a8 8 0 0 1 16 0'],
+  send: ['M22 2L11 13', 'M22 2l-7 20-4-9-9-4z'],
+  trash: ['M3 6h18', 'M8 6V4h8v2', 'M6 6l1 14h10l1-14'],
+  shield: ['M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'],
   link: ['M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7', 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7'],
 } as const;
 export type IconName = keyof typeof PATHS;

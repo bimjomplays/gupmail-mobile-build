@@ -80,3 +80,13 @@ export function who(name: unknown, addr: unknown): string {
   if (typeof addr === 'string' && addr) return addr;
   return 'Unknown sender';
 }
+
+/** "just now", "3 min ago", "2 h ago", else the date (no seconds: this is for "last contact" lines). */
+export function ago(sec: unknown, nowSec = Math.floor(Date.now() / 1000)): string {
+  if (!isTime(sec)) return 'never';
+  const d = nowSec - sec;
+  if (d < 90) return 'just now';
+  if (d < 3600) return `${Math.round(d / 60)} min ago`;
+  if (d < 86_400) return `${Math.round(d / 3600)} h ago`;
+  return fullDate(sec);
+}

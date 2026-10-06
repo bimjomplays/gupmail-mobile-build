@@ -46,6 +46,8 @@ export function errorText(err: unknown): ErrorText {
       return { kind: 'not_ready', title: 'Open GupMail from the app', body: 'This page only works inside the GupMail app on your iPhone.' };
     case 'locked':
       return { kind: 'locked', title: 'GupMail is locked', body: 'Unlock with Face ID to see your mail.' };
+    case 'failed':
+      return { kind: 'failed', title: err.code === 'ai_unavailable' ? 'Claude couldn\'t do that' : err.code === 'send_failed' ? 'Sending failed' : 'The mail server didn\'t answer', body: err.message };
     case 'rate_limited':
       return { kind: 'rate_limited', title: 'The PC asked to wait', body: err.retryAfter ? `Try again in ${err.retryAfter} seconds.` : 'Try again in a moment.' };
     default:

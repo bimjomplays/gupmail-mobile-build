@@ -46,7 +46,7 @@ function draftRow(d: DraftSummary): HTMLElement {
       h('small', null, `To ${to}${d.origin === 'ai' ? ' · Claude\'s draft' : ''}`)),
     failed ? h('span', { class: 'end warn-text' }, plural(failed, 'check')) : d.status === 'failed' ? h('span', { class: 'end warn-text' }, 'Failed') : null,
   ];
-  return okId(d.threadId) ? h('a', { class: 'row', href: `#/thread/${d.threadId}/reply` }, ...inner) : h('div', { class: 'row' }, ...inner);
+  return okId(d.id) ? h('a', { class: 'row', href: `#/drafts/${d.id}`, 'data-draft': d.id }, ...inner) : h('div', { class: 'row' }, ...inner);
 }
 
 export const today: Screen = {
