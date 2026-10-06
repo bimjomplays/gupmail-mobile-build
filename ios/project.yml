@@ -33,10 +33,17 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
-        # gupmail://open?thread=<id> (a notification's tap): navigation only, after unlock; handled in a later slice
+        # gupmail://open?thread=<id> (a notification's tap) and gupmail://open: navigation only, after unlock.
+        # gupmail://pair?... only fills in the pairing screen for the owner to check; it never pairs by itself.
         CFBundleURLTypes:
           - CFBundleURLName: com.dltnp.gupmail
             CFBundleURLSchemes: [gupmail]
+        # pairing: the app scans the QR code GupMail on the PC shows (the picture never leaves the phone)
+        NSCameraUsageDescription: >-
+          GupMail uses the camera only to scan the pairing code your PC shows. Nothing is recorded or sent anywhere.
+        # the app lock, and the check before every send and unsubscribe
+        NSFaceIDUsageDescription: >-
+          GupMail uses Face ID to unlock the app and to confirm it's you before it sends an email or unsubscribes you.
         UIUserInterfaceStyle: Dark
         CADisableMinimumFrameDurationOnPhone: true
         UIStatusBarStyle: UIStatusBarStyleLightContent

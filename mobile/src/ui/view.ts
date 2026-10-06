@@ -34,11 +34,13 @@ export function errorText(err: unknown): ErrorText {
     case 'unreachable':
       return { kind: 'unreachable', title: 'PC unreachable', body: 'GupMail can\'t reach your PC. Check that the PC is on and this phone is connected to Tailscale.' };
     case 'unauthorized':
-      return { kind: 'unauthorized', title: 'Pairing lost', body: 'The PC no longer accepts this phone. Pair it again from GupMail on the PC (Settings, Phone).' };
+      return { kind: 'unauthorized', title: 'Pairing lost', body: 'The PC no longer accepts this phone. Make a new pairing code in GupMail on the PC (Settings, Phone) and pair again.' };
     case 'not_paired':
-      return { kind: 'not_paired', title: 'Not paired yet', body: 'This phone isn\'t paired with a PC. Pair it from GupMail on the PC (Settings, Phone).' };
+      return { kind: 'not_paired', title: 'Not paired yet', body: 'This phone isn\'t paired with a PC. In GupMail on your PC open Settings, Phone, Pair a phone, then scan its code here.' };
     case 'not_ready':
       return { kind: 'not_ready', title: 'Open GupMail from the app', body: 'This page only works inside the GupMail app on your iPhone.' };
+    case 'locked':
+      return { kind: 'locked', title: 'GupMail is locked', body: 'Unlock with Face ID to see your mail.' };
     case 'rate_limited':
       return { kind: 'rate_limited', title: 'The PC asked to wait', body: err.retryAfter ? `Try again in ${err.retryAfter} seconds.` : 'Try again in a moment.' };
     default:
@@ -51,10 +53,11 @@ export function errorView(err: unknown, o: { retry: () => void; navigate: (hash:
   const auth = t.kind === 'unauthorized' || t.kind === 'not_paired';
   const detail = err instanceof ApiError && err.kind === 'unreachable' && err.status >= 500 ? `The PC answered with an error (${err.status}).` : null;
   const actions: Child[] = [];
-  if (auth) actions.push(h('button', { class: 'btn primary', type: 'button', onclick: () => o.navigate('#/phone') }, 'Open This phone'));
-  if (t.kind !== 'not_ready' && !auth) actions.push(h('button', { class: 'btn primary', type: 'button', onclick: o.retry }, icon('retry'), 'Try again'));
+  if (t.kind === 'not_paired') actions.push(h('button', { class: 'btn primary', type: 'button', onclick: () => o.navigate('#/pair') }, 'Pair with your PC'));
+  if (t.kind === 'unauthorized') actions.push(h('button', { class: 'btn primary', type: 'button', onclick: () => o.navigate('#/phone') }, 'Open This phone'));
+  if (t.kind !== 'not_ready' && t.kind !== 'locked' && !auth) actions.push(h('button', { class: 'btn primary', type: 'button', onclick: o.retry }, icon('retry'), 'Try again'));
   return h('div', { class: `state error${auth ? ' auth' : ''}`, role: 'alert' },
-    icon(auth ? 'lock' : 'offline'), h('h2', null, t.title), h('p', null, t.body), detail ? h('p', null, detail) : null,
+    icon(auth || t.kind === 'locked' ? 'lock' : 'offline'), h('h2', null, t.title), h('p', null, t.body), detail ? h('p', null, detail) : null,
     ...actions,
     t.kind === 'unreachable' && o.auto ? h('small', null, 'Trying again automatically.') : null);
 }

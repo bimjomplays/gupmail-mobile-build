@@ -17,6 +17,8 @@ const PATHS = {
   mail: ['M4 5h16v14H4z', 'M4 7l8 6 8-6'],
   reply: ['M9 14L4 9l5-5', 'M4 9h10a6 6 0 0 1 6 6v3'],
   check: ['M5 12l5 5 9-10'],
+  qr: ['M4 4h6v6H4z', 'M14 4h6v6h-6z', 'M4 14h6v6H4z', 'M14 14h2v2h-2z', 'M18 14h2', 'M14 19h2', 'M18 18h2v2h-2z'],
+  link: ['M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7', 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7'],
 } as const;
 export type IconName = keyof typeof PATHS;
 

@@ -1,6 +1,8 @@
 // Hash routes: #/today #/inbox #/thread/<id> #/thread/<id>/reply #/drafts #/search #/more #/unsubscribes #/codes #/phone
-// (#/thread/<id> is what gupmail://open?thread=<id> turns into). Ids are digits only: anything else is not a route.
+// #/pair (#/thread/<id> is what gupmail://open?thread=<id> turns into). Ids are digits only: anything else is not a
+// route.
 import { more } from './screens/more.ts';
+import { pair } from './screens/pair.ts';
 import { phone } from './screens/phone.ts';
 import { stubs } from './screens/stubs.ts';
 import type { Screen } from './screens/types.ts';
@@ -18,6 +20,7 @@ const ROUTES: Route[] = [
   { name: 'unsubscribes', re: /^#\/unsubscribes$/, screen: stubs.unsubscribes },
   { name: 'codes', re: /^#\/codes$/, screen: stubs.codes },
   { name: 'phone', re: /^#\/phone$/, screen: phone },
+  { name: 'pair', re: /^#\/pair$/, screen: pair },
 ];
 
 export const DEFAULT_HASH = '#/today';

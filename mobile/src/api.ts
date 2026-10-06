@@ -7,6 +7,7 @@ export type ErrorKind =
   | 'unauthorized'    // 401: the token is gone ("Pairing lost")
   | 'not_paired'      // the app has no token yet
   | 'not_ready'       // no way to reach the PC from here (production build opened outside the app)
+  | 'locked'          // the app is locked (Face ID): nothing goes to the PC until it is unlocked
   | 'rate_limited'    // 429
   | 'client';         // any other 4xx: the PC's own message is shown
 

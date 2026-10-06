@@ -3,3 +3,10 @@
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: var(--fs-small); }
 .kv dt { color: var(--faint); }
 .kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+/* pairing (Pair with your PC, This phone) */
+.actions { display: flex; flex-direction: column; gap: 10px; }
+.steps { margin: 0; padding-left: 1.3em; list-style: decimal; display: flex; flex-direction: column; gap: 6px; color: var(--dim); font-size: var(--fs-small); line-height: 1.5; }
+.pc-host { font-family: var(--mono); font-size: var(--fs-body); font-weight: 600; color: var(--text) !important; overflow-wrap: anywhere; }
+.warn-text { color: var(--amber) !important; }
+.pair-note { color: var(--amber); font-size: var(--fs-small); line-height: 1.5; text-align: center; }

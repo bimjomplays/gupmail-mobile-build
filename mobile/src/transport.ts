@@ -20,7 +20,11 @@ const nativeTransport: Transport = async (req: RawRequest): Promise<RawResponse>
     if (e instanceof ApiError) throw e;
     const code = e instanceof BridgeError ? e.code : '';
     if (code === 'not_paired') throw new ApiError('not_paired', 'This phone isn\'t paired with a PC yet', 0, code);
-    throw new ApiError('unreachable', 'PC unreachable', 0, code);   // timeout, no route, bridge stub, ...
+    // the app locked (requests are refused, running ones stopped): the page reloads the screen after unlock
+    if (code === 'locked' || code === 'aborted') throw new ApiError('locked', 'GupMail is locked', 0, code);
+    // the app refused the request itself (not a /v1/ path, a bad body): a bug here, not a network problem
+    if (code === 'bad_request' || code === 'too_large') throw new ApiError('client', 'The app refused that request', 0, code);
+    throw new ApiError('unreachable', 'PC unreachable', 0, code);   // timeout, no route, ...
   }
 };
 

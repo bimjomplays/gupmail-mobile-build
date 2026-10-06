@@ -15,35 +15,71 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 
+/// One window with the web UI, and above it the app lock's window (AppLock), which covers everything while the app
+/// is locked or not in front. The app starts locked; Face ID comes up once it is in front.
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+    private var appLock: AppLock?
+    private var controller: WebViewController?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
+        // locked and covered from the first frame
+        let lock = AppLock(scene: scene)
+        let controller = WebViewController(lock: lock)
         let window = UIWindow(windowScene: scene)
         window.overrideUserInterfaceStyle = .dark
-        window.rootViewController = WebViewController()
+        window.rootViewController = controller
         window.makeKeyAndVisible()
         self.window = window
-        // a gupmail:// link that launched the app (options.urlContexts) is ignored for now, like the one below
+        self.appLock = lock
+        self.controller = controller
+        // a gupmail:// link that launched the app: kept until the app is unlocked and the page is ready
+        for context in options.urlContexts { controller.bridge.handleIncomingURL(context.url) }
     }
 
-    /// gupmail://open?thread=<id> while running. Registered so the scheme belongs to this app; acting on it
-    /// (navigation only, after the app is unlocked) comes with the pairing / Face ID slice. Until then it is
-    /// ignored and not logged (a thread id is mail data).
-    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {}
+    /// gupmail://open?thread=<id>, gupmail://open, or a pairing link, while running: same as at launch
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts { controller?.bridge.handleIncomingURL(context.url) }
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        appLock?.sceneWillResignActive()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        // the keyboard (and its word suggestions from what was typed) goes away with the lock
+        window?.endEditing(true)
+        appLock?.sceneDidEnterBackground()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        appLock?.sceneDidBecomeActive()
+    }
 }
 
 /// The whole app: one full-screen WKWebView showing the bundled web UI (dist/index.html, copied in from the repo's
 /// mobile/dist/ folder). The page lays itself out under the notch and home bar with env(safe-area-inset-*), so the
-/// web view itself ignores the safe area. The page can't navigate anywhere outside dist/: links to websites will open
-/// in Safari through the bridge's openExternal op (after showing the real address), never by navigating the web view.
-final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+/// web view itself ignores the safe area. The page can't navigate anywhere outside dist/: links to websites open in
+/// Safari through the bridge's openExternal op (after a native question showing the real address), never by
+/// navigating the web view.
+final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, BridgeHost {
+    let bridge: NativeBridge
     private var webView: WKWebView!
-    private lazy var bridge = NativeBridge()
     /// dist/ inside the app bundle; nil only if the build left it out
     private let webRoot = Bundle.main.url(forResource: "dist", withExtension: nil)
     private let background = UIColor(named: "LaunchBG") ?? .black
+
+    init(lock: AppLock) {
+        bridge = NativeBridge(lock: lock)
+        super.init(nibName: nil, bundle: nil)
+        lock.onLock = { [weak self] in self?.bridge.didLock() }
+        lock.onUnlock = { [weak self] in self?.bridge.didUnlock() }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("WebViewController is made in code")
+    }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
 
@@ -69,6 +105,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         #endif
 
+        bridge.host = self
         bridge.isTrustedPage = { [weak self] url in self?.isInsideWebRoot(url) ?? false }
         view = webView
     }
@@ -99,6 +136,20 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         return path == root || path.hasPrefix(root + "/")
     }
 
+    // MARK: - BridgeHost
+
+    func presentNative(_ vc: UIViewController) -> Bool {
+        guard presentedViewController == nil, view.window != nil else { return false }
+        present(vc, animated: true)
+        return true
+    }
+
+    func sendEvent(_ name: String, _ data: [String: Any]) {
+        webView.callAsyncJavaScript(
+            "const b = window.GupMailBridge; if (b && typeof b.event === 'function') b.event(name, data);",
+            arguments: ["name": name, "data": data], in: nil, in: .page) { _ in }
+    }
+
     // MARK: - WKNavigationDelegate
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
@@ -108,8 +159,18 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         decisionHandler(local ? .allow : .cancel)
     }
 
+    /// a new document starts loading (not a hash change inside the page): the old page's calls belong to nobody
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        bridge.pageWillLoad()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        bridge.pageDidLoad()
+    }
+
     /// iOS can kill the page's process in the background (memory pressure); start it again instead of a blank screen
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        bridge.pageWillLoad()
         loadHome()
     }
 
