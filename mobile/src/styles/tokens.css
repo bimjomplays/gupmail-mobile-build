@@ -1,0 +1,57 @@
+/* GupMail mobile design tokens: the desktop app's dark sky-blue glass (design/mockups/4-copilot-split.html),
+   adapted to a phone. Every later screen uses these variables and the classes in components.css; no raw colours,
+   sizes or safe-area maths in screen code. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces: near-black sky blue, faint white layers on top */
+  --base: #00050c;
+  --base-2: #04111f;
+  --solid: #0b111c;                       /* menus, sheets: opaque */
+  --pane: rgba(255, 255, 255, 0.03);
+  --card: rgba(255, 255, 255, 0.055);
+  --card-hi: rgba(255, 255, 255, 0.09);
+  --line: rgba(255, 255, 255, 0.09);
+  --line-hi: rgba(255, 255, 255, 0.17);
+  --glass: rgba(6, 14, 26, 0.72);         /* tab bar, headers over scrolling content */
+
+  /* text */
+  --text: #e9eef9;
+  --dim: #a9b3ca;
+  --faint: #8893ad;
+
+  /* accent + Claude */
+  --accent: #38bdf8;
+  --accent-ink: #04202e;
+  --soft: rgba(56, 189, 248, 0.14);
+  --soft-line: rgba(56, 189, 248, 0.45);
+  --aurora: linear-gradient(120deg, #38bdf8, #a78bfa 55%, #f472b6);
+
+  /* status */
+  --green: #34d399;
+  --amber: #fbbf24;
+  --red: #f87171;
+
+  /* type: rem so Dynamic Type (html font: -apple-system-body) scales everything */
+  --font: -apple-system, 'SF Pro Text', system-ui, 'Inter', sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --fs-title: 1.75rem;
+  --fs-head: 1.1875rem;
+  --fs-body: 1rem;
+  --fs-small: 0.8125rem;
+  --fs-micro: 0.6875rem;
+
+  /* geometry */
+  --tap: 44px;                            /* minimum touch target (Apple HIG) */
+  --pad: 16px;
+  --gap: 12px;
+  --radius: 16px;
+  --radius-sm: 11px;
+  --tabbar-h: 52px;
+
+  /* safe areas (notch, Dynamic Island, home indicator) */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}

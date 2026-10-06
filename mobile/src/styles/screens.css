@@ -1,0 +1,5 @@
+/* Screen-specific bits only; shared pieces live in components.css. */
+.stub-note { color: var(--faint); font-size: var(--fs-small); text-align: center; padding: 4px 0; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: var(--fs-small); }
+.kv dt { color: var(--faint); }
+.kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }

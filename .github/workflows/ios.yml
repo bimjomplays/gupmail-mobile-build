@@ -1,0 +1,53 @@
+# Builds the GupMail iPhone app into an unsigned IPA on a GitHub-hosted Mac. The IPA is signed later, when it is
+# installed on the phone.
+#  - every push that touches the app: IPA as a workflow artifact "GupMail" (testing builds)
+#  - a tag like  ios-v0.1.0  : the IPA is also attached to a GitHub Release "<tag> (build N)" (N = CFBundleVersion =
+#    the run number), which is what the phone installer downloads
+# Only ios/, mobile/ and this file trigger it. The job runs only in a public repo: macOS minutes are free there, so the
+# private development repo skips it and the public build copy (scripts/publish-public.sh) does the build.
+name: ios
+on:
+  push:
+    branches: ["**"]
+    tags: ["ios-v*"]
+    paths: ["ios/**", "mobile/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  ipa:
+    if: github.event.repository.private == false
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build
+        run: |
+          xcodebuild -project GupMail.xcodeproj -target GupMail -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1 \
+            || { grep -E "error:" build.log | head -60; tail -30 build.log; exit 1; }
+      - name: Package
+        run: |
+          app=build/Release-iphoneos/GupMail.app
+          test -f "$app/dist/index.html" || { echo "dist/index.html missing from the app"; exit 1; }
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Info.plist"
+          mkdir Payload
+          cp -R "$app" Payload/
+          zip -qry GupMail.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GupMail
+          path: ios/GupMail.ipa
+      - name: Attach to a release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" GupMail.ipa --title "$GITHUB_REF_NAME (build ${{ github.run_number }})" \
+            --notes "Unsigned IPA (build ${{ github.run_number }})." \
+            || gh release upload "$GITHUB_REF_NAME" GupMail.ipa --clobber
