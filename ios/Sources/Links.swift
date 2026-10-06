@@ -1,8 +1,8 @@
 import Foundation
 
-// Everything the app reads from text it didn't write itself: the pairing link (QR code, paste box or a gupmail://
-// link), gupmail://open links, and the API paths the web UI asks the bridge to call. Foundation only, no UIKit, so the
-// rules stay small and readable in one place.
+// Everything the app reads from text it didn't write itself: the pairing link (QR code or paste box), gupmail://open
+// links, and the API paths the web UI asks the bridge to call. Foundation only, no UIKit, so the rules stay small and
+// readable in one place.
 
 /// The pairing link the PC shows as a QR code and as text (docs/phone-api.md, "The pairing link"):
 ///     gupmail://pair?v=1&url=<percent-encoded base URL>&token=<device token>
@@ -92,13 +92,11 @@ struct PairLink: Equatable {
 /// A gupmail:// link opened from outside the app (a notification's tap, a link in another app). Navigation only:
 ///     gupmail://open                 -> Today
 ///     gupmail://open?thread=<id>     -> that conversation (a positive integer, nothing else in the link)
-///     gupmail://pair?...             -> the pairing screen, filled in for the owner to check and confirm; it never
-///                                       pairs by itself
-/// Anything else is nil (ignored). The app applies these only after it is unlocked.
+/// Anything else is nil (ignored), a gupmail://pair link included: pairing is the QR scanner or the paste box only, so
+/// a web page can't push a pairing at the app (docs/phone-api.md). The app applies these only after it is unlocked.
 enum IncomingLink: Equatable {
     case today
     case thread(Int)
-    case pair(PairLink)
 
     static func parse(_ url: URL) -> IncomingLink? {
         let text = url.absoluteString
@@ -112,9 +110,6 @@ enum IncomingLink: Equatable {
             guard items.count == 1, items[0].name == "thread", let raw = items[0].value,
                   let id = PhoneAPI.positiveId(raw) else { return nil }
             return .thread(id)
-        case "pair":
-            if case .success(let link) = PairLink.parse(text) { return .pair(link) }
-            return nil
         default:
             return nil
         }

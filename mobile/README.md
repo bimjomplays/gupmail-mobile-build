@@ -13,5 +13,8 @@
 - While the app is locked (Face ID) every op but hello and lock answers `locked`. A send or an unsubscribe needs
   `confirmDecision(...)` (Face ID) right before it: native lets the matching request out once, else the page gets a
   local 428 `confirmation_required`. Links open only through `openExternal`, which shows the real address natively.
+- Mail is written by strangers: its HTML is cleaned again here (src/mail-frame.ts) and shown only in a sandboxed
+  srcdoc frame without scripts, with its own CSP (no remote pictures until the owner taps Show pictures). Links in mail
+  never navigate: a tap shows the real address first, and only http(s) links open, in Safari, through the bridge.
 - Everything in `mobile/` is published to a public repo (scripts/publish-public.sh): no personal data, addresses,
   tokens or test data in here (tests live in the repo-root `test/`).

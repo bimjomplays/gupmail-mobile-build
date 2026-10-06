@@ -109,3 +109,57 @@ a.row:active { background: var(--card-hi); }
 .skeleton i:nth-child(3) { opacity: 0.45; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- form controls ---- */
+.seg > button { border: 0; background: transparent; cursor: pointer; gap: 6px; display: flex; align-items: center; justify-content: center; min-height: var(--tap); }
+.seg .n { color: var(--faint); font-size: var(--fs-micro); font-weight: 700; }
+.select, .input {
+  min-height: var(--tap); padding: 0 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-hi); background: var(--card); color: var(--text); font: inherit; font-size: var(--fs-small);
+  max-width: 55%;
+}
+.input { max-width: none; width: 100%; color-scheme: dark; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field .k { font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.hint { color: var(--faint); font-size: var(--fs-small); line-height: 1.45; }
+.mono { font-family: var(--mono); overflow-wrap: anywhere; }
+.small { font-size: var(--fs-small); }
+
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; min-height: 20px; border-radius: 10px; font-size: var(--fs-micro); font-weight: 650; background: var(--card-hi); color: var(--dim); }
+.chip.plain { background: transparent; padding: 0; color: var(--faint); }
+.chip.icon-only { padding: 0 4px; background: transparent; }
+.chip .ic { width: 14px; height: 14px; }
+.chip.draft { background: var(--soft); color: var(--accent); }
+.chip.rule { background: var(--soft); color: var(--text); }
+.chip.cat-needs_reply, .chip.cat-client, .chip.cat-security { background: rgba(251, 191, 36, 0.14); color: var(--amber); }
+.chip.cat-money { background: rgba(52, 211, 153, 0.13); color: var(--green); }
+.chip.cat-spam { background: rgba(248, 113, 113, 0.13); color: var(--red); }
+
+/* ---- toast (above the tab bar) ---- */
+.toast-host { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--safe-b) + 10px); display: flex; justify-content: center; padding: 0 12px; pointer-events: none; z-index: 30; }
+.toast {
+  pointer-events: auto; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 480px;
+  padding: 6px 6px 6px 16px; border-radius: var(--radius); background: var(--solid); border: 1px solid var(--line-hi);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); font-size: var(--fs-small);
+}
+.toast .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 8px 0; }
+.toast.error { border-color: rgba(248, 113, 113, 0.5); }
+.toast-action { color: var(--accent); border-color: transparent; background: transparent; }
+
+/* ---- bottom sheet ---- */
+.sheet-back { position: fixed; inset: 0; background: rgba(0, 3, 8, 0.6); display: flex; align-items: flex-end; z-index: 40; }
+.sheet {
+  width: 100%; max-height: 88%; overflow-y: auto; background: var(--solid); border-top: 1px solid var(--line-hi);
+  border-radius: 20px 20px 0 0; padding: 18px calc(var(--pad) + var(--safe-r)) calc(16px + var(--safe-b)) calc(var(--pad) + var(--safe-l));
+  display: flex; flex-direction: column; gap: 12px;
+}
+.sheet-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.sheet .list .row { width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--line); font: inherit; color: inherit; cursor: pointer; }
+.sheet .list .row:last-child { border-bottom: 0; }
+.sheet .list .row[disabled] { opacity: 0.4; }
+
+/* ---- pull to refresh ---- */
+.pull { height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--faint); font-size: var(--fs-small); flex: none; margin-bottom: calc(-1 * var(--gap)); }
+.pull[data-ready='true'] { color: var(--accent); }
+.pull[data-busy='true'] .ic, .btn.spin .ic { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

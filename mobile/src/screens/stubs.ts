@@ -1,4 +1,4 @@
-// Screen stubs for every screen in the iPhone spec. Each one already has the real frame: title, back button,
+// Screen stubs for the screens later updates fill in. Each one already has the real frame: title, back button,
 // loading / empty / error states, and it asks the PC (/v1/status) so "PC unreachable" and "Pairing lost" show up
 // everywhere. The real content arrives with the slices named in `soon`; they replace `render`.
 import type { Status } from '../api.ts';
@@ -52,25 +52,6 @@ function stubScreen(s: Stub): Screen {
 const id = (c: Ctx) => c.params[0] ?? '';
 
 export const stubs = {
-  today: stubScreen({
-    title: 'Today', tab: 'today', icon: 'today',
-    about: 'The headline, what needs you, and the agenda: bills, packages and dates.',
-    soon: 'Arrives with the Today and Inbox update.',
-    empty: { title: 'Nothing needs you', hint: 'When something does, it shows up here.' },
-  }),
-  inbox: stubScreen({
-    title: 'Inbox', tab: 'inbox', icon: 'inbox',
-    about: 'Important, All and Quiet tabs with an account filter; swipe to archive or snooze.',
-    soon: 'Arrives with the Today and Inbox update.', countKey: 'inbox', countLabel: 'unread conversations',
-    empty: { title: 'Inbox zero', hint: 'No unread mail in the inbox.' },
-  }),
-  thread: stubScreen({
-    title: 'Thread', tab: 'inbox', icon: 'mail',
-    about: 'The conversation, Claude\'s summary and what it asks of you. Pictures stay off until you tap.',
-    soon: 'Arrives with the Today and Inbox update.',
-    back: () => '#/inbox', sub: (c) => `Conversation ${id(c)}`,
-    empty: { title: 'Nothing here', hint: 'This conversation has no messages.' },
-  }),
   reply: stubScreen({
     title: 'Reply', tab: 'inbox', icon: 'reply',
     about: 'Claude\'s draft or a blank one: edit it, ask Claude to rewrite it, check the flags, then send with Face ID.',

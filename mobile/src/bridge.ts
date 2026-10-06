@@ -1,14 +1,14 @@
 // The page's side of the iOS shell's NativeBridge (ios/Sources/NativeBridge.swift). One versioned envelope both
 // ways: page -> native {v, id, op, args}; native -> page {v, id, ok, result | error:{code, message}}. Native also
-// calls window.GupMailBridge.event(name, data): `lock` {locked} and `open` {thread} | {screen: 'today' | 'pair'}.
+// calls window.GupMailBridge.event(name, data): `lock` {locked} and `open` {thread} | {screen: 'today'}.
 // The token never reaches JavaScript: `request` hands native the method/path/body and gets the PC's answer back, and
 // the pairing link (QR code, paste box) is read natively too; the page only ever sees the PC's address.
 // In a desktop browser (tests, dev) there is no native side: the wrappers below have dev fallbacks, and production
 // builds fail closed (no confirmation, no pairing, links don't open, nothing is copied).
 
-export type BridgeOp = 'hello' | 'request' | 'pair' | 'unpair' | 'lock' | 'confirm' | 'openExternal' | 'copy';
+export type BridgeOp = 'hello' | 'request' | 'pair' | 'unpair' | 'lock' | 'confirm' | 'openExternal' | 'copy' | 'push';
 /** Every op the page uses; NativeBridge.ops must list the same ones (test/ios.test.ts checks). */
-export const BRIDGE_OPS: readonly BridgeOp[] = ['hello', 'request', 'pair', 'unpair', 'lock', 'confirm', 'openExternal', 'copy'];
+export const BRIDGE_OPS: readonly BridgeOp[] = ['hello', 'request', 'pair', 'unpair', 'lock', 'confirm', 'openExternal', 'copy', 'push'];
 export interface BridgeEnvelope { v: 1; id: string; op: BridgeOp; args: Record<string, unknown> }
 export type BridgeReply =
   | { id: string; ok: true; result?: unknown }
@@ -282,4 +282,53 @@ export async function copyText(text: string, opts: { expiresIn?: number } = {}):
     try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
   }
   return false;
+}
+
+/* ---- Apple push ---- */
+
+/**
+ * Where this phone's alerts stand (native works it out: the app's signing profile, iOS's notification permission and
+ * whether the PC took the push address). Native registers with the PC by itself on every unlock; the page only asks
+ * the owner first (`ask`) and shows the state on This phone.
+ */
+export type PushState =
+  | 'not_paired' | 'not_signed' | 'permission_off' | 'not_asked' | 'pending' | 'working'
+  | 'pc_old' | 'refused' | 'unreachable' | 'no_token' | 'pairing_lost';
+const PUSH_STATES: readonly PushState[] = ['not_paired', 'not_signed', 'permission_off', 'not_asked', 'pending', 'working',
+  'pc_old', 'refused', 'unreachable', 'no_token', 'pairing_lost'];
+export interface PushStatus {
+  state: PushState;
+  /** the app's profile carries Push (aps-environment) */
+  signed: boolean;
+  /** show the "Get alerts on this iPhone" question (paired, signed, iOS hasn't asked, the owner didn't say Not now) */
+  ask: boolean;
+  /** iOS's own reason when it gave no push address */
+  detail: string;
+}
+
+function pushStatus(x: unknown): PushStatus | null {
+  const o = obj(x);
+  const state = PUSH_STATES.find((s) => s === o.state);
+  if (!state) return null;
+  return { state, signed: o.signed === true, ask: o.ask === true, detail: str(o.detail).slice(0, 200) };
+}
+
+async function pushCall(args: Record<string, unknown>, timeoutMs: number): Promise<PushStatus | null> {
+  if (!nativeAvailable()) return null;
+  try { return pushStatus(await callNative('push', args, timeoutMs)); } catch { return null; }
+}
+
+/** null outside the app or when native doesn't answer (locked, ...). */
+export const pushInfo = (): Promise<PushStatus | null> => pushCall({ action: 'status' }, 10_000);
+/** After the page explained alerts: iOS asks (only the first time), then native registers with the PC. */
+export const pushEnable = (): Promise<PushStatus | null> => pushCall({ action: 'enable' }, 10 * 60_000);
+/** "Not now": not asked again by itself for this pairing. */
+export const pushLater = (): Promise<PushStatus | null> => pushCall({ action: 'later' }, 10_000);
+/** Register with the PC again now (`force`: even if it took this address before). */
+export const pushSync = (force = false): Promise<PushStatus | null> => pushCall({ action: 'sync', force }, 60_000);
+
+/** GupMail's notification settings in iOS Settings (where a "Don't Allow" is undone). */
+export async function pushSettings(): Promise<boolean> {
+  if (!nativeAvailable()) return false;
+  try { return obj(await callNative('push', { action: 'settings' }, 10_000)).opened === true; } catch { return false; }
 }

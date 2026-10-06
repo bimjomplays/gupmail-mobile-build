@@ -4,7 +4,9 @@
 import * as bridge from '../bridge.ts';
 import { append, h, replace } from '../dom.ts';
 import { icon } from '../icons.ts';
+import { forgetEventCursor } from '../events.ts';
 import { loadStatus } from '../state.ts';
+import { checkAlerts } from '../ui/alerts.ts';
 import { head, type Screen } from './types.ts';
 
 type State =
@@ -27,6 +29,8 @@ export const pair: Screen = {
   tab: 'more',
   mount(host, ctx) {
     let dead = false;
+    // the PC this phone is paired with right now, if any: pairing again replaces it (see the 'found' step)
+    let current: bridge.PcInfo | undefined;
     // data-state like every other screen (tests and CSS key on it); data-pair says which step
     const body = h('div', { class: 'view', 'data-state': 'loading', 'data-pair': 'loading' });
     append(host, head('Pair with your PC', { back: '#/phone', navigate: ctx.navigate }));
@@ -55,8 +59,10 @@ export const pair: Screen = {
       set({ s: 'pairing', pc });
       const r = await bridge.pairConfirm();
       if (r.state === 'paired') {
+        forgetEventCursor();
         set({ s: 'paired', pc: r.pc });
         loadStatus().catch(() => { /* Today shows its own state */ });
+        checkAlerts().catch(() => { /* This phone has the button too */ });
       } else if (r.state === 'failed') {
         // a code the PC refused is gone; one it couldn't be asked about can be tried again
         const retry = r.reason === 'unreachable' || r.reason === 'rate_limited' || r.reason === 'busy';
@@ -90,8 +96,9 @@ export const pair: Screen = {
               h('span', { class: 'k' }, 'Pair with this PC?'),
               h('p', { class: 'pc-host' }, where(st.pc)),
               h('p', null, 'Only pair with your own PC: this name must match the one GupMail shows on your PC under Settings, Phone.'),
-              st.source === 'link'
-                ? h('p', { class: 'warn-text' }, 'This code came from a link that opened the app, not from your camera. Pair only if you just made it on your PC.')
+              current
+                ? h('p', { class: 'warn-text', 'data-replaces': '' }, 'This phone is already paired with ', h('strong', null, where(current)),
+                    '. Pairing replaces that: this phone is forgotten on that PC and stops working with it.')
                 : null),
             h('div', { class: 'actions' },
               h('button', { class: 'btn primary', type: 'button', onclick: () => void confirm(st.pc) }, icon('check'), 'Pair'),
@@ -117,7 +124,9 @@ export const pair: Screen = {
 
     void (async () => {
       if (!bridge.nativeAvailable()) return set({ s: 'unsupported' });
-      const p = await bridge.pairPending();
+      const [p, hi] = await Promise.all([bridge.pairPending(), bridge.hello()]);
+      current = hi?.paired ? hi.pc : undefined;
+      if (dead) return;
       set(p ? { s: 'found', pc: p.pc, source: p.source } : { s: 'start' });
     })();
     return () => { dead = true; };

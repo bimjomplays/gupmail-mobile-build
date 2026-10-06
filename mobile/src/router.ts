@@ -1,18 +1,21 @@
 // Hash routes: #/today #/inbox #/thread/<id> #/thread/<id>/reply #/drafts #/search #/more #/unsubscribes #/codes #/phone
 // #/pair (#/thread/<id> is what gupmail://open?thread=<id> turns into). Ids are digits only: anything else is not a
 // route.
+import { inbox } from './screens/inbox.ts';
 import { more } from './screens/more.ts';
 import { pair } from './screens/pair.ts';
 import { phone } from './screens/phone.ts';
 import { stubs } from './screens/stubs.ts';
+import { thread } from './screens/thread.ts';
+import { today } from './screens/today.ts';
 import type { Screen } from './screens/types.ts';
 
 interface Route { re: RegExp; screen: Screen; name: string }
 
 const ROUTES: Route[] = [
-  { name: 'today', re: /^#\/today$/, screen: stubs.today },
-  { name: 'inbox', re: /^#\/inbox$/, screen: stubs.inbox },
-  { name: 'thread', re: /^#\/thread\/(\d{1,12})$/, screen: stubs.thread },
+  { name: 'today', re: /^#\/today$/, screen: today },
+  { name: 'inbox', re: /^#\/inbox$/, screen: inbox },
+  { name: 'thread', re: /^#\/thread\/(\d{1,12})$/, screen: thread },
   { name: 'reply', re: /^#\/thread\/(\d{1,12})\/reply$/, screen: stubs.reply },
   { name: 'drafts', re: /^#\/drafts$/, screen: stubs.drafts },
   { name: 'search', re: /^#\/search$/, screen: stubs.search },

@@ -2,8 +2,10 @@ import { api, setTransport } from './api.ts';
 import * as bridge from './bridge.ts';
 import { clear, h } from './dom.ts';
 import { DEFAULT_HASH, resolve } from './router.ts';
-import { loadStatus } from './state.ts';
+import { onPcEvent, startEvents } from './events.ts';
+import { loadStatus, onStatus } from './state.ts';
 import { pickTransport } from './transport.ts';
+import { checkAlerts } from './ui/alerts.ts';
 import { tabbar } from './ui/tabbar.ts';
 
 async function boot(): Promise<void> {
@@ -33,21 +35,35 @@ async function boot(): Promise<void> {
   window.addEventListener('hashchange', show);
   const go = (hash: string) => { if (location.hash === hash) show(); else location.hash = hash; };
 
-  // Native events. Unlocked: a screen that failed while the app was locked loads again, and the badges catch up.
+  // Native events. Unlocked: a screen that failed while the app was locked loads again, the badges catch up, and
+  // alerts get asked about (first unlock after pairing) or registered again if the PC lost them.
+  // PC events (long-poll): the badges follow them; screens listen for what they show. The loop stops itself on
+  // 401 / not paired / locked and starts again once the PC answers (any status) or the app is unlocked.
+  let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  onPcEvent((e) => {
+    if (!['mail', 'triage', 'drafts', 'accounts', 'unsub', 'reset'].includes(e.type)) return;
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { loadStatus().catch(() => { /* badges stay as they were */ }); }, 400);
+  });
+  onStatus(() => startEvents(retryBaseMs ?? undefined));
+
+  const alerts = () => { checkAlerts().catch(() => { /* This phone shows where alerts stand */ }); };
   bridge.onEvent('lock', (d) => {
     if (d.locked !== false) return;
+    startEvents(retryBaseMs ?? undefined);
     if (screen.querySelector('[data-state="error"]')) show();
-    loadStatus().catch(() => { /* the screen shows its own error */ });
+    loadStatus().then(alerts, alerts);
   });
   // A gupmail:// link (native sends it only after unlock): navigation only, the id checked again here.
   bridge.onEvent('open', (d) => {
     const t = d.thread;
     if (typeof t === 'number' && Number.isSafeInteger(t) && t > 0 && t < 1e12) go('#/thread/' + String(t));
     else if (d.screen === 'today') go('#/today');
-    else if (d.screen === 'pair') go('#/pair');
   });
 
   show();
+  // the page (re)loaded while already unlocked (no unlock event comes then)
+  void bridge.hello().then((hi) => { if (hi && !hi.locked && hi.paired) alerts(); });
 }
 
 void boot();

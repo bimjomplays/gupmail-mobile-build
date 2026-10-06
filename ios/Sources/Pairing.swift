@@ -12,6 +12,13 @@ struct Pairing: Codable, Equatable {
     /// isn't a 401 makes it the token. The old one keeps working on the PC until then, so a lost answer can't lock
     /// the phone out.
     var pendingToken: String?
+    /// The APNs device token this PC has for this phone (its POST /v1/push/register answered 2xx), so a later start
+    /// knows to tell the PC (DELETE) when Push is lost: notifications turned off in iOS Settings, or re-signed
+    /// without Push. A rotation drops it on the PC, so it is cleared here then too.
+    var apnsToken: String?
+    /// The owner tapped "Not now" on the alerts question for this pairing: not asked again by itself (This phone
+    /// still has the button).
+    var pushDeclined: Bool?
 
     var host: String { baseURL.host ?? "" }
     var port: Int { baseURL.port ?? PairLink.contractPort }

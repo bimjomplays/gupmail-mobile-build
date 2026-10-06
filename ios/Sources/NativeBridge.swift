@@ -38,11 +38,12 @@ private struct IssuedConfirm {
 /// rejects with "refused"); a malformed envelope gets bad_request, a newer envelope version unsupported_version, an op
 /// this build doesn't know unknown_op. Native also calls window.GupMailBridge.event(name, data):
 ///     lock {locked}                  the app locked / unlocked
-///     open {thread} | {screen}       a gupmail:// link to follow (screen: today | pair), only after unlock
+///     open {thread} | {screen}       a gupmail:// link to follow (screen: today), only after unlock
 ///
 /// ops: hello · request {method, path, body, idempotencyKey, timeoutMs} · pair {action: scan | paste | pending |
 ///      confirm | cancel} · unpair · lock · confirm {action: send, draftId, version, title | action: unsubscribe,
-///      unsubscribeId, title} · openExternal {url} · copy {text, expiresIn}
+///      unsubscribeId, title} · openExternal {url} · copy {text, expiresIn} · push {action: status | enable | later |
+///      settings | sync, force}
 ///
 /// The PC's address and the device token stay in here and in the iOS Keychain, never in JavaScript: `request` takes
 /// a method, an API path and a JSON body, this class adds the paired PC's address and the bearer token, makes the
@@ -54,6 +55,10 @@ private struct IssuedConfirm {
 /// POST /v1/drafts/:id/send or POST /v1/unsubscribes/:id/unsubscribe leaves the phone only with a matching
 /// confirmation (used up), else the page gets a local 428 confirmation_required and nothing is sent.
 ///
+/// Apple push: this class also keeps the PC's copy of this phone's APNs device token current (POST
+/// /v1/push/register with the token, the profile's environment and the bundle id; DELETE when Push is lost), on every
+/// unlock, after pairing, after a token rotation and after a failure (backing off). PushCenter talks to iOS.
+///
 /// Nothing the page sends is logged (mail text, addresses, paths, links); the log only ever names a fixed event.
 @MainActor
 final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
@@ -64,7 +69,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// envelope version this build speaks; the page sends it as `v` and gets it back in every answer
     static let version = 1
     /// every op this build knows, in the order hello lists them
-    static let ops = ["hello", "request", "pair", "unpair", "lock", "confirm", "openExternal", "copy"]
+    static let ops = ["hello", "request", "pair", "unpair", "lock", "confirm", "openExternal", "copy", "push"]
     /// the only ops that answer while the app is locked
     static let lockedOps: Set<String> = ["hello", "lock"]
     private static let methods: Set<String> = ["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -92,7 +97,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var spent: [String: (signature: String, expires: Date)] = [:]
     /// PC clock minus phone clock, from the last serverTime the PC sent (the confirm block's `at` is in PC time)
     private var clockOffset: TimeInterval?
-    /// a pairing link read by the scanner, the paste box or a gupmail://pair link, waiting for the owner's Pair tap
+    /// a pairing link read by the scanner or the paste box, waiting for the owner's Pair tap
     private var pendingLink: (link: PairLink, source: String, until: Date)?
     /// a gupmail:// link that arrived while locked or before the page was ready: applied after unlock
     private var deferredLink: (link: IncomingLink, until: Date)?
@@ -100,6 +105,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// closes the native screen on top (scanner, paste box, open-link question) and answers the page
     private var presented: (() -> Void)?
     private var pairingInFlight = false
+    private var push = PushSync()
 
     init(lock: AppLock) {
         appLock = lock
@@ -158,6 +164,8 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             openExternal(args, ok: ok, fail: fail)
         case "copy":
             copy(args, ok: ok, fail: fail)
+        case "push":
+            pushOp(args, ok: ok, fail: fail)
         default:
             fail("unknown_op", "no such op")
         }
@@ -205,12 +213,17 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         issued.removeAll()
         pendingLink = nil
         pairing = nil
+        push.retry?.cancel()
+        push.retry = nil
         host?.sendEvent("lock", ["locked": true])
     }
 
     func didUnlock() {
         host?.sendEvent("lock", ["locked": false])
         applyDeferred()
+        // every unlock (also the first after launch): the PC gets this phone's push address again if it changed or
+        // it never took it this launch, and hears when Push was lost
+        Task { await self.syncPush(force: false) }
     }
 
     /// a new page load starts (first load, reload, the web process died): its calls belong to nobody anymore
@@ -226,13 +239,18 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     /// A gupmail:// link from outside (SceneDelegate). Navigation only; kept until the app is unlocked and the page is
-    /// ready. A pairing link only fills in the pairing screen for the owner to check: it never pairs by itself.
+    /// ready. A gupmail://pair link is not one of them (IncomingLink.parse drops it).
     func handleIncomingURL(_ url: URL) {
         // the link itself is never logged (a thread id is mail data, a pairing link holds a key)
         guard let link = IncomingLink.parse(url) else {
             log.notice("ignored a link")
             return
         }
+        handleIncomingLink(link)
+    }
+
+    /// A tapped alert's target (PushCenter), or a parsed gupmail:// link: same rules, after unlock and the page.
+    func handleIncomingLink(_ link: IncomingLink) {
         deferredLink = (link, Date().addingTimeInterval(Self.linkLife))
         applyDeferred()
     }
@@ -246,10 +264,6 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             host?.sendEvent("open", ["screen": "today"])
         case .thread(let id):
             host?.sendEvent("open", ["thread": id])
-        case .pair(let link):
-            closePresented()
-            _ = found(link, source: "link")
-            host?.sendEvent("open", ["screen": "pair"])
         }
     }
 
@@ -359,11 +373,16 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
                                     body: body, idempotencyKey: key, timeout: timeout)
         if usedPending, var now = pairing, now.pendingToken == p.pendingToken, let status = out.status {
             if (200..<300).contains(status) {
-                // first success with the rotated token: from now on it's the only one the PC accepts
+                // first success with the rotated token: from now on it's the only one the PC accepts. The PC dropped
+                // the push registration with the old token: register again.
                 now.token = now.pendingToken ?? now.token
                 now.pendingToken = nil
+                now.apnsToken = nil
                 pairing = now
                 PairingStore.save(now)
+                push.sent = nil
+                // forced: a registration still on its way with the old token may come back 2xx after the PC dropped it
+                Task { await self.syncPush(force: true) }
             } else if status == 401 {
                 // the PC doesn't take the rotated token (unused for 10 minutes, or replaced): back to the old one
                 now.pendingToken = nil
@@ -684,6 +703,10 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             if let t = json["serverTime"] as? NSNumber { clockOffset = t.doubleValue - Date().timeIntervalSince1970 }
             // the old pairing's entry on its PC goes away too (best effort): nobody holds that token anymore
             if let old, old.token != p.token { forgetOnPC(old) }
+            // a new PC knows nothing about this phone's push yet (if notifications are already allowed, it hears now;
+            // else the page asks first)
+            resetPush()
+            Task { await self.syncPush(force: true) }
             return ["state": "paired", "pc": Self.pcInfo(p)]
         case 401:
             pendingLink = nil
@@ -706,6 +729,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         issued.removeAll()
         spent.removeAll()
         clockOffset = nil
+        resetPush()
         log.notice("unpaired")
         guard let old else { return ["paired": false, "pcForgot": false] }
         var forgot = false
@@ -726,6 +750,248 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             background.end()
         }
+    }
+
+    // MARK: - Apple push
+
+    /// What this launch knows about the PC's copy of the push registration.
+    private struct PushSync {
+        /// the APNs device token the PC took during this launch (for the current pairing)
+        var sent: String?
+        /// the last attempt's outcome: idle | working | pc_old | refused | unreachable | no_token | pairing_lost
+        var phase = "idle"
+        /// iOS's reason when it gave no device token
+        var detail: String?
+        /// the PC was told (DELETE) this launch that this phone has no Apple push
+        var toldOff = false
+        var retry: Task<Void, Never>?
+        var retryDelay: TimeInterval = 30
+        /// a sync is running; another request for one waits for it (`again`, with `againForce`) instead of racing it
+        var running = false
+        var again = false
+        var againForce = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        /// bumped when the pairing changes (paired, unpaired): a sync started before ignores what it finds
+        var generation = 0
+    }
+
+    /// A new pairing, or none: what this launch knew about the old PC's registration no longer counts. A running sync
+    /// keeps going but its results are ignored (generation).
+    private func resetPush() {
+        push.retry?.cancel()
+        push.retry = nil
+        push.sent = nil
+        push.phase = "idle"
+        push.detail = nil
+        push.toldOff = false
+        push.retryDelay = 30
+        push.generation += 1
+    }
+
+    /// locked, or the pairing changed since `generation`: a running sync stops before its next request
+    private func pushStale(_ generation: Int) -> Bool {
+        appLock.locked || push.generation != generation
+    }
+
+    /// push {action: status | enable | later | settings | sync, force}: every answer is the status (pushStatus);
+    /// settings answers {opened}.
+    private func pushOp(_ a: [String: Any], ok: @escaping Reply, fail: @escaping Fail) {
+        switch a["action"] as? String {
+        case "status":
+            Task { ok(await self.pushStatus()) }
+        case "enable":
+            // the page explained what alerts are; now iOS asks (only the first time)
+            guard loadPairing() != nil else { return fail("not_paired", Self.failureText("not_paired")) }
+            // an install without Push never shows iOS's question
+            guard PushCenter.profile.env != nil else {
+                Task { ok(await self.pushStatus()) }
+                return
+            }
+            Task {
+                _ = await PushCenter.shared.askPermission()
+                await self.syncPush(force: true)
+                ok(await self.pushStatus())
+            }
+        case "later":
+            // "Not now": not asked again by itself for this pairing
+            if var p = loadPairing() {
+                p.pushDeclined = true
+                if PairingStore.save(p) { pairing = p }
+            }
+            Task { ok(await self.pushStatus()) }
+        case "settings":
+            // GupMail's notification settings in iOS Settings (iOS 16+)
+            guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else {
+                return ok(["opened": false])
+            }
+            UIApplication.shared.open(url, options: [:]) { ok(["opened": $0]) }
+        case "sync":
+            let force = (a["force"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
+            Task {
+                await self.syncPush(force: force)
+                ok(await self.pushStatus())
+            }
+        default:
+            fail("bad_request", "unknown push action")
+        }
+    }
+
+    /// For This phone and the alerts question. state: not_paired | not_signed (the profile has no Push) |
+    /// permission_off | not_asked | pending | working | pc_old | refused | unreachable | no_token | pairing_lost.
+    /// ask = show the alerts question (paired, signed with Push, iOS hasn't asked yet, not declined).
+    private func pushStatus() async -> [String: Any] {
+        let env = PushCenter.profile.env
+        let permission = await PushCenter.shared.permission()
+        guard !appLock.locked, let p = loadPairing() else {
+            return ["state": "not_paired", "signed": env != nil, "env": Self.orNull(env),
+                    "permission": permission.rawValue, "ask": false, "detail": NSNull()]
+        }
+        let state: String
+        if env == nil {
+            state = "not_signed"
+        } else if permission == .off {
+            state = "permission_off"
+        } else if permission == .notAsked {
+            state = "not_asked"
+        } else if push.running || push.phase == "idle" {
+            // nothing finished yet this launch: what the PC had last time
+            state = p.apnsToken != nil && !push.running ? "working" : "pending"
+        } else {
+            state = push.phase
+        }
+        let ask = env != nil && permission == .notAsked && p.pushDeclined != true
+        return ["state": state, "signed": env != nil, "env": Self.orNull(env), "permission": permission.rawValue,
+                "ask": ask, "detail": Self.orNull(push.phase == "no_token" ? push.detail : nil)]
+    }
+
+    /// Brings the PC's copy of the push registration in line with this phone: with Push signed and notifications
+    /// allowed, POST /v1/push/register when the token changed, the PC hasn't taken it this launch, or `force`;
+    /// otherwise DELETE it (once per launch, and whenever the PC is known to hold one). Failures back off (30 s,
+    /// 2 min, 8 min, 30 min) while the app stays unlocked; the next unlock tries again anyway. A call while a sync
+    /// runs waits for one more run after it (keeping `force`), so its caller sees the result.
+    private func syncPush(force: Bool) async {
+        guard !appLock.locked, loadPairing() != nil else { return }
+        if push.running {
+            push.again = true
+            push.againForce = push.againForce || force
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in push.waiters.append(done) }
+            return
+        }
+        push.running = true
+        push.retry?.cancel()
+        push.retry = nil
+        var force = force
+        while true {
+            await syncPushOnce(force: force)
+            guard push.again, !appLock.locked else { break }
+            force = push.againForce
+            push.again = false
+            push.againForce = false
+        }
+        push.again = false
+        push.againForce = false
+        push.running = false
+        let waiters = push.waiters
+        push.waiters = []
+        for w in waiters { w.resume() }
+    }
+
+    private func syncPushOnce(force: Bool) async {
+        let generation = push.generation
+        guard !appLock.locked, let p = loadPairing() else { return }
+        let env = PushCenter.profile.env
+        let permission = await PushCenter.shared.permission()
+        guard !pushStale(generation) else { return }
+        guard let env, permission == .allowed else {
+            // Push lost (or never there): the PC stops sending to this phone through Apple. Told even when this phone
+            // has no record of a registration (a POST whose answer was lost), once per launch.
+            push.phase = "idle"
+            guard p.apnsToken != nil || !push.toldOff else { return }
+            let out = await perform(method: "DELETE", target: "/v1/push/register", json: nil, key: nil, special: nil,
+                                    timeout: 20)
+            guard push.generation == generation else { return }
+            switch out {
+            case .answer(let status, _) where status == 429 || status >= 500:
+                schedulePushRetry()
+            case .answer:
+                // 2xx; 401: the PC forgot this phone (and its push token); 404: a PC without Apple push has none;
+                // anything else won't change by asking again
+                updatePairing(like: p) { $0.apnsToken = nil }
+                push.sent = nil
+                push.toldOff = true
+                log.notice("push registration dropped on the PC")
+            case .failure("locked"), .failure("aborted"), .failure("not_paired"):
+                break
+            case .failure:
+                schedulePushRetry()
+            }
+            return
+        }
+        let token: String
+        switch await PushCenter.shared.deviceToken() {
+        case .token(let t):
+            token = t
+        case .failed(let code, let message):
+            guard push.generation == generation else { return }
+            push.phase = code == "not_signed" ? "idle" : "no_token"
+            push.detail = message
+            if code == "timeout" { schedulePushRetry() }
+            return
+        }
+        guard !pushStale(generation) else { return }
+        // the PC took this one already this launch: nothing to do
+        if !force && push.sent == token && p.apnsToken == token {
+            push.phase = "working"
+            return
+        }
+        let out = await perform(method: "POST", target: "/v1/push/register",
+                                json: PushCenter.registerBody(token: token, env: env), key: nil, special: nil,
+                                timeout: 20)
+        guard push.generation == generation else { return }
+        switch out {
+        case .answer(let status, _) where (200..<300).contains(status):
+            updatePairing(like: p) { $0.apnsToken = token }
+            push.sent = token
+            push.toldOff = false
+            push.phase = "working"
+            push.retryDelay = 30
+            log.notice("push registered with the PC")
+        case .answer(404, _):
+            push.phase = "pc_old"                             // a PC from before Apple push
+        case .answer(401, _):
+            push.phase = "pairing_lost"
+        case .answer(let status, _) where status == 429 || status >= 500:
+            push.phase = "unreachable"
+            schedulePushRetry()
+        case .answer:
+            push.phase = "refused"                            // 422: the PC doesn't take this bundle id or token
+            log.notice("the PC refused the push registration")
+        case .failure("locked"), .failure("aborted"), .failure("not_paired"):
+            break
+        case .failure:
+            push.phase = "unreachable"
+            schedulePushRetry()
+        }
+    }
+
+    private func schedulePushRetry() {
+        push.retry?.cancel()
+        let delay = push.retryDelay
+        push.retryDelay = min(push.retryDelay * 4, 1800)
+        push.retry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.syncPush(force: false)
+        }
+    }
+
+    /// Changes the stored pairing if it is still the one `p` was (same PC, same pairing; a rotation meanwhile is fine).
+    private func updatePairing(like p: Pairing, _ change: (inout Pairing) -> Void) {
+        guard var now = pairing ?? (try? PairingStore.load()), now.baseURL == p.baseURL,
+              now.pairedAt == p.pairedAt else { return }
+        change(&now)
+        guard PairingStore.save(now) else { return }
+        if pairing != nil { pairing = now }
     }
 
     // MARK: - Safari, clipboard

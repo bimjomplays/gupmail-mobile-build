@@ -5,7 +5,19 @@ import WebKit
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        true
+        // the notification centre's delegate has to be in place before launching ends, or a tap on an alert that
+        // cold-launches the app never reaches it (Push.swift)
+        _ = PushCenter.shared
+        return true
+    }
+
+    // Apple push device token (Push.swift): only asked for when the app's profile has Push
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushCenter.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        PushCenter.shared.didFail(error: error)
     }
 
     func application(_ application: UIApplication,
@@ -36,6 +48,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.controller = controller
         // a gupmail:// link that launched the app: kept until the app is unlocked and the page is ready
         for context in options.urlContexts { controller.bridge.handleIncomingURL(context.url) }
+        // a tapped alert (also one that launched the app): the same way, after Face ID
+        PushCenter.shared.onOpen = { [weak controller] link in controller?.bridge.handleIncomingLink(link) }
     }
 
     /// gupmail://open?thread=<id>, gupmail://open, or a pairing link, while running: same as at launch

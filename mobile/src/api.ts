@@ -2,6 +2,9 @@
 // app, dev transport in a desktop browser) or the token. Paths are the phone API's (docs/phone-api.md): /v1/...
 import { newId } from './bridge.ts';
 
+/** A fresh Idempotency-Key (8..64 of [A-Za-z0-9_-]): one per user action, reused only for retries of it. */
+export const newKey = (): string => newId();
+
 export type ErrorKind =
   | 'unreachable'     // no answer (PC off, not on the tailnet, timeout) or the PC answered 5xx: "PC unreachable"
   | 'unauthorized'    // 401: the token is gone ("Pairing lost")
@@ -64,13 +67,60 @@ export const api = {
   delete: <T>(path: string, opts?: Options) => call<T>('DELETE', path, null, opts),
 };
 
-/* ---- shapes the foundation uses (slice 3 adds the rest from docs/phone-api.md) ---- */
+/* ---- shapes from docs/phone-api.md (unknown fields are ignored, unknown enum values shown neutrally) ---- */
+export interface Account { id: number; name: string; email: string; color: string | null; status: string; statusDetail: string | null; enabled: boolean }
 export interface Status {
   api: number;
   serverTime: number;
-  phone: { id: number; name: string | null; pairedAt: number; lastSeenAt: number | null } | null;
-  accounts: { id: number; name: string; email: string; color: string | null; status: string; statusDetail: string | null; enabled: boolean }[];
+  phone: { id: number; name: string | null; pairedAt: number; lastSeenAt: number | null; push?: { registered: boolean; env: string | null } } | null;
+  accounts: Account[];
   counts: Record<string, number>;
   sync: { ok: boolean; problems: { accountId: number; status: string; detail: string }[] };
   ai: { enabled: boolean; busy: boolean; lastError: string | null; queue: number };
 }
+
+export interface Triage {
+  category: string; importance: number; needsReply: boolean; notify: boolean;
+  reason: string | null; summary: string | null; asks: string[]; source: string;
+}
+export interface Address { name?: string | null; address: string }
+
+/** One conversation in a list: its newest shown message plus the conversation's unread/star state. */
+export interface ThreadRow {
+  id: number; accountId: number; threadId: number;
+  fromName: string | null; fromAddr: string; toName: string | null;
+  subject: string | null; snippet: string | null; date: number; count: number;
+  unread: boolean; flagged: boolean; inInbox: boolean; hasAttachments: boolean;
+  triage: Triage | null; draftId: number | null;
+}
+export interface Page { threads: ThreadRow[]; nextCursor: string | null }
+
+export interface Attachment { index: number; filename: string | null; contentType: string | null; size: number }
+export interface Message {
+  id: number; accountId: number; threadId: number; messageId: string | null;
+  fromName: string | null; fromAddr: string; to: Address[]; cc: Address[]; replyTo: string | null;
+  subject: string | null; date: number; seen: boolean; flagged: boolean; inInbox: boolean;
+  text: string | null; html: string | null; remoteImages: number;
+  attachments: Attachment[]; listUnsubscribe: string | null; triage: Triage | null;
+}
+export interface Extracted { id: number; messageId: number; threadId: number; kind: string; title: string | null; amount: string | null; dueAt: number | null; value: string | null }
+export interface Sender { addr: string; name: string | null; received: number; firstAt: number | null; sentTo: number; rules: string[] }
+export interface ThreadDetail {
+  threadId: number; accountId: number; subject: string | null; draftId: number | null;
+  messages: Message[];
+  context: { extracted: Extracted[]; sender: Sender | null; unsubscribe: { id: number; display: string | null } | null; waiting: boolean };
+}
+
+export interface DraftSummary {
+  id: number; accountId: number; threadId: number | null; to: Address[]; subject: string | null;
+  status: string; origin: string; firstContact: boolean; checks: { ok: boolean; title: string }[];
+}
+export interface Today {
+  generatedAt: number; headline: string;
+  needsYou: ThreadRow[]; money: ThreadRow[]; security: ThreadRow[]; deliveries: ThreadRow[]; clients: ThreadRow[];
+  drafts: DraftSummary[]; extracted: Extracted[]; waiting: ThreadRow[];
+  quietCount: number; quietBreakdown: Record<string, number>; unsubSuggestions: number;
+}
+
+export interface UndoBlock { action: string; messageIds: number[] }
+export interface ActResult { ok: boolean; action: string; threadId?: number; messageIds: number[]; undo: UndoBlock | null }

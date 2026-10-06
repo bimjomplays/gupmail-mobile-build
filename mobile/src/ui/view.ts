@@ -14,7 +14,12 @@ export interface ViewSpec<T> {
   /** First automatic retry delay after "PC unreachable" (doubles to 60 s). */
   retryBaseMs?: number;
   navigate: (hash: string) => void;
+  /** Silent reloads: return true when the new data shows nothing new (the screen stays as it is). */
+  same?: (prev: T, next: T) => boolean;
 }
+
+/** The disposer, plus reload(silent): silent = no skeleton, and a failure keeps what is on screen. */
+export type ViewHandle = (() => void) & { reload: (silent?: boolean) => Promise<boolean> };
 
 export const DEFAULT_RETRY_MS = 4_000;
 const MAX_RETRY_MS = 60_000;
@@ -63,10 +68,12 @@ export function errorView(err: unknown, o: { retry: () => void; navigate: (hash:
 }
 
 /** Mounts a loading/ready/empty/error view into `host`. Returns a disposer that stops timers and ignores late answers. */
-export function loadView<T>(host: HTMLElement, spec: ViewSpec<T>): () => void {
+export function loadView<T>(host: HTMLElement, spec: ViewSpec<T>): ViewHandle {
   let dead = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let attempt = 0;
+  let last: { data: T } | null = null;
+  let seq = 0;
   host.classList.add('view');
 
   const show = (state: string, node: Node, errKind?: string) => {
@@ -75,17 +82,24 @@ export function loadView<T>(host: HTMLElement, spec: ViewSpec<T>): () => void {
     replace(host, node);
   };
 
-  const run = async (showLoading: boolean) => {
+  const run = async (showLoading: boolean, silent = false): Promise<boolean> => {
     clearTimeout(timer);
-    if (showLoading) show('loading', loadingView());
+    const mine = ++seq;   // only the newest load may paint
+    if (showLoading && !silent) show('loading', loadingView());
     try {
       const data = await spec.load();
-      if (dead) return;
+      if (dead || mine !== seq) return false;
       attempt = 0;
+      const working = last !== null && host.dataset.state !== 'error';
+      if (silent && working && spec.same?.(last!.data, data)) { last = { data }; return true; }
+      last = { data };
       const node = spec.render(data);
       if (node) show('ready', node); else show('empty', emptyView(spec.empty));
+      return true;
     } catch (err) {
-      if (dead) return;
+      if (dead || mine !== seq) return false;
+      // a silent reload over a working screen keeps what is there
+      if (silent && last !== null && host.dataset.state !== 'error') return false;
       const t = errorText(err);
       const auto = t.kind === 'unreachable';
       show('error', errorView(err, { retry: () => { attempt = 0; void run(true); }, navigate: spec.navigate, auto }), t.kind);
@@ -93,9 +107,11 @@ export function loadView<T>(host: HTMLElement, spec: ViewSpec<T>): () => void {
         const delay = Math.min((spec.retryBaseMs ?? DEFAULT_RETRY_MS) * 2 ** attempt++, MAX_RETRY_MS);
         timer = setTimeout(() => { void run(false); }, delay);
       }
+      return false;
     }
   };
 
   void run(true);
-  return () => { dead = true; clearTimeout(timer); };
+  const dispose = () => { dead = true; clearTimeout(timer); };
+  return Object.assign(dispose, { reload: (silent = false) => run(true, silent) });
 }

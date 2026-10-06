@@ -6,14 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
-// No inline script, no remote script, no remote anything. The app talks to the PC only through the native bridge
+// No inline script, no remote script, no remote connections. The app talks to the PC only through the native bridge
 // (postMessage), so production has connect-src 'none'. The dev build may fetch from a local mock/PC.
+// Mail is shown in sandboxed srcdoc frames (src/mail-frame.ts), and a srcdoc frame inherits this policy on top of its
+// own: so style-src allows inline styles (mail is styled inline) and img-src allows https: (only after "Show
+// pictures"; the frame's own CSP is img-src data: until then). No frame-src: a mail frame can't navigate anywhere.
 function csp(dev: boolean): string {
   return [
     "default-src 'none'",
     "script-src 'self'",
-    "style-src 'self'",
-    "img-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
     `connect-src ${dev ? "'self' http://127.0.0.1:* http://localhost:*" : "'none'"}`,
     "base-uri 'none'",
     "form-action 'none'",
