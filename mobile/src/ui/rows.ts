@@ -13,6 +13,8 @@ export interface RowOpts {
   showAccount?: boolean;
   /** Replaces the sender line (Today's "waiting on" rows). */
   lead?: string;
+  /** A Reply button under the row: opens the one reply flow (#/thread/<id>/reply). Today's rows. */
+  reply?: boolean;
   onArchive?: (row: ThreadRow, el: HTMLElement) => void;
   onSnooze?: (row: ThreadRow, el: HTMLElement) => void;
 }
@@ -42,7 +44,11 @@ export function threadRow(r: ThreadRow, o: RowOpts = {}): HTMLElement {
         r.flagged ? h('span', { class: 'chip icon-only', 'aria-label': 'Starred' }, icon('star')) : null,
         r.hasAttachments ? h('span', { class: 'chip icon-only', 'aria-label': 'Has attachments' }, icon('clip')) : null)));
 
-  if (!o.onArchive && !o.onSnooze) return h('div', { class: 'trow-wrap' }, front);
+  const replyBar = o.reply && tid
+    ? h('div', { class: 'trow-reply' },
+      h('a', { class: 'btn primary reply', href: `#/thread/${tid}/reply`, 'data-reply': tid, 'aria-label': `Reply to ${r.subject || 'this email'}` }, icon('reply'), 'Reply'))
+    : null;
+  if (!o.onArchive && !o.onSnooze) return h('div', { class: 'trow-wrap' }, front, replyBar);
 
   const wrap = h('div', { class: 'trow-wrap swipe', 'data-thread': tid },
     h('div', { class: 'trow-bg', 'aria-hidden': 'true' },

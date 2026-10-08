@@ -165,6 +165,8 @@ export interface Today {
   /** Mail of the last 24 hours sorted away without bothering the owner (#344; an older PC sends only the quiet* names). */
   sortedAwayCount?: number; sortedAwayBreakdown?: Record<string, number>;
   unsubSuggestions: number;
+  /** The header chips' numbers; an older PC doesn't send them. */
+  counts?: { needsReply: number; money: number; security: number; deliveries: number; waiting: number; unsubscribe: number };
 }
 
 export interface UndoBlock { action: string; messageIds: number[] }

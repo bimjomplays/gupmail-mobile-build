@@ -2,31 +2,25 @@
 // last heard from this phone, whether alerts (Apple push) work, the Face ID state, Lock now, pair again, and Forget this phone
 // (a confirm sheet, then the app forgets the PC and tells it, then any half-finished pairing is dropped). When the PC says
 // 401 this is where "Pairing lost" sends you, so it must work without the PC: it explains instead of showing the generic error.
-import { api, ApiError, type Status } from '../api.ts';
+import { ApiError, type Status } from '../api.ts';
 import * as bridge from '../bridge.ts';
 import { append, h, replace } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { forgetEventCursor } from '../events.ts';
 import { ago } from '../format.ts';
 import { loadStatus, pcNow } from '../state.ts';
-import { pushText } from '../ui/alerts.ts';
+import { loadNotifySettings, notifyCard, pushText, type NotifySettings } from '../ui/alerts.ts';
 import { sheet } from '../ui/sheet.ts';
 import { errorText, loadView } from '../ui/view.ts';
 import { head, type Screen } from './types.ts';
 
 type Loaded =
-  | { ok: true; status: Status; native: bridge.Hello | null; push: bridge.PushStatus | null }
+  | { ok: true; status: Status; native: bridge.Hello | null; push: bridge.PushStatus | null; notify: NotifySettings | null }
   | { ok: false; err: ApiError; native: bridge.Hello | null };
 
 const when = (sec: number | null | undefined) => (sec ? new Date(sec * 1000).toLocaleString() : 'never');
 const ARM_MS = 4_000;
 const PENDING_POLL_MS = 2_000;
-
-const TEST_SENT: Record<string, string> = {
-  apns: 'Sent through Apple. It should show up in a few seconds.',
-  ntfy: 'Apple didn\'t take it, so it went through the ntfy app.',
-  none: 'The PC has no way to send alerts yet (no Apple key and no ntfy). Set it up in GupMail on the PC (Settings, Notifications).',
-};
 
 /** Alerts (Apple push): where they stand, and the one thing to do about it. Redraws itself after each action. */
 function alertsCard(first: bridge.PushStatus, pcRegistered: boolean | undefined): { el: HTMLElement; dispose: () => void } {
@@ -54,14 +48,6 @@ function alertsCard(first: bridge.PushStatus, pcRegistered: boolean | undefined)
     switch (st.state) {
       case 'not_asked': action = act('Turn on alerts', () => redraw(bridge.pushEnable()), true); break;
       case 'permission_off': action = act('Open iOS Settings', async () => { await bridge.pushSettings(); }); break;
-      case 'working':
-        action = act('Send a test alert', async () => {
-          try {
-            const r = await api.post<{ sent: boolean; path: string }>('/v1/push/test', {});
-            note.textContent = TEST_SENT[r.path] ?? TEST_SENT.none;
-          } catch (e) { note.textContent = e instanceof ApiError ? errorText(e).title : 'The test alert didn\'t go out.'; }
-        });
-        break;
       case 'pending': case 'unreachable': case 'no_token': case 'refused':
         action = act('Try again', () => redraw(bridge.pushSync(true)));
         break;
@@ -146,7 +132,9 @@ export const phone: Screen = {
         const native = await bridge.hello();
         try {
           const status = await loadStatus();
-          return { ok: true, status, native, push: native?.paired ? await bridge.pushInfo() : null };
+          // a failing settings call must not take the whole screen with it: the card just isn't there
+          const notify = await loadNotifySettings().catch(() => null);
+          return { ok: true, status, native, push: native?.paired ? await bridge.pushInfo() : null, notify };
         }
         catch (e) {
           // no token / token refused: show the pairing explanation here instead of an error screen
@@ -188,6 +176,7 @@ export const phone: Screen = {
               h('dt', null, 'Last contact'), h('dd', { 'data-last-contact': '' }, ago(p?.lastSeenAt, pcNow()), p?.lastSeenAt ? h('small', { class: 'hint' }, ` (${when(p.lastSeenAt)})`) : null),
               h('dt', null, 'Alerts'), h('dd', null, p?.push?.registered ? 'Apple push is on' : 'Apple push is off'),
               h('dt', null, 'API'), h('dd', null, `v${r.status.api}`))),
+          r.notify ? notifyCard(r.notify) : null,
           r.push ? alerts(r.push, p?.push?.registered) : null,
           h('div', { class: 'card', 'data-faceid': r.native?.biometry ?? 'unknown' },
             h('span', { class: 'k' }, 'Face ID'), h('p', null, faceIdText(r.native))),
