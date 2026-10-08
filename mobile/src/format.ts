@@ -1,6 +1,16 @@
 // Small display helpers shared by the mail screens. Server values are never trusted to be well-formed: anything odd
 // falls back to a neutral text instead of throwing.
 
+/** Whether the PC has business mail on (docs/phone-api.md settings.businessMail); state.ts sets it from /v1/status. An older PC without the setting counts as on. */
+let businessOn = true;
+export function setBusinessMail(on: boolean): void { businessOn = on; }
+export function businessMail(): boolean { return businessOn; }
+
+/** Whether Claude writes reply drafts by itself (docs/phone-api.md settings.autoDraft); state.ts sets it from /v1/status. An older PC without the setting counts as on. */
+let autoDraftOn = true;
+export function setAutoDraft(on: boolean): void { autoDraftOn = on; }
+export function autoDraft(): boolean { return autoDraftOn; }
+
 /** Category labels from docs/phone-api.md; an unknown category (open list) shows as its own plain text. */
 const CATEGORY: Record<string, string> = {
   needs_reply: 'Needs reply', client: 'Clients', money: 'Money', security: 'Security', delivery: 'Deliveries', fyi: 'FYI',
@@ -8,6 +18,7 @@ const CATEGORY: Record<string, string> = {
 };
 export function categoryLabel(c: unknown): string {
   if (typeof c !== 'string' || !c) return '';
+  if (c === 'client' && !businessMail()) return '';   // personal-only: a leftover client thread reads like normal mail, no label
   return CATEGORY[c] ?? c.replace(/_/g, ' ');
 }
 
@@ -70,6 +81,11 @@ export function fileSize(n: unknown): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.ceil(n / 1024)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** "840 KB", "12.4 MB": decimal, like the providers' own limits ("Gmail takes up to 25 MB"). For files to send. */
+export function sendSize(n: number): string {
+  return n < 1_000_000 ? `${Math.max(1, Math.round(n / 1000))} KB` : `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')} MB`;
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string { return `${n} ${n === 1 ? one : many}`; }

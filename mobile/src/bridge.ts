@@ -7,9 +7,9 @@
 // builds fail closed (no confirmation, no pairing, links don't open, nothing is copied).
 import { pcNow } from './clock.ts';
 
-export type BridgeOp = 'hello' | 'request' | 'pair' | 'unpair' | 'lock' | 'confirm' | 'openExternal' | 'copy' | 'push';
+export type BridgeOp = 'hello' | 'request' | 'pair' | 'unpair' | 'lock' | 'confirm' | 'openExternal' | 'copy' | 'push' | 'attach';
 /** Every op the page uses; NativeBridge.ops must list the same ones (test/ios.test.ts checks). */
-export const BRIDGE_OPS: readonly BridgeOp[] = ['hello', 'request', 'pair', 'unpair', 'lock', 'confirm', 'openExternal', 'copy', 'push'];
+export const BRIDGE_OPS: readonly BridgeOp[] = ['hello', 'request', 'pair', 'unpair', 'lock', 'confirm', 'openExternal', 'copy', 'push', 'attach'];
 export interface BridgeEnvelope { v: 1; id: string; op: BridgeOp; args: Record<string, unknown> }
 export type BridgeReply =
   | { id: string; ok: true; result?: unknown }
@@ -335,4 +335,42 @@ export const pushSync = (force = false): Promise<PushStatus | null> => pushCall(
 export async function pushSettings(): Promise<boolean> {
   if (!nativeAvailable()) return false;
   try { return obj(await callNative('push', { action: 'settings' }, 10_000)).opened === true; } catch { return false; }
+}
+
+/* ---- attachments ---- */
+
+/** A file the owner picked; its bytes stay native (only `uploadPick` in transport.ts sends them, straight to the PC). */
+export interface PickedFile { pickId: string; filename: string; contentType: string; size: number }
+export interface Picked {
+  files: PickedFile[];
+  /** over GupMail's 50 MB per file: native didn't keep them */
+  tooBig: { filename: string; size: number }[];
+  /** couldn't be read (an iCloud photo that didn't download, ...) */
+  failed: string[];
+}
+
+/**
+ * The native Photos or Files picker. null = cancelled (or closed by a lock); 'unavailable' = not inside the app
+ * (a browser: there is no picker, and a production page never reads files itself).
+ */
+export async function pickFiles(source: 'photos' | 'files'): Promise<Picked | null | 'unavailable'> {
+  if (!nativeAvailable()) return 'unavailable';
+  let r: Record<string, unknown>;
+  try { r = obj(await callNative('attach', { action: 'pick', source }, 60 * 60_000)); } catch { return null; }
+  if (r.state !== 'picked') return null;
+  const out: Picked = { files: [], tooBig: [], failed: [] };
+  for (const x of Array.isArray(r.files) ? r.files : []) {
+    const f = obj(x);
+    const filename = str(f.filename).slice(0, 300) || 'file';
+    if (f.tooBig === true) out.tooBig.push({ filename, size: int(f.size) });
+    else if (typeof f.pickId === 'string' && f.pickId && int(f.size) > 0) out.files.push({ pickId: f.pickId, filename, contentType: str(f.contentType), size: int(f.size) });
+    else out.failed.push(filename);
+  }
+  return out;
+}
+
+/** Native forgets picked files the page won't upload (none given: every one). */
+export async function discardPicks(pickIds?: string[]): Promise<void> {
+  if (!nativeAvailable() || (pickIds && !pickIds.length)) return;
+  try { await callNative('attach', pickIds ? { action: 'discard', pickIds } : { action: 'discard' }, 10_000); } catch { /* gone with the next page load anyway */ }
 }

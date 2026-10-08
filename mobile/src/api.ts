@@ -55,7 +55,11 @@ async function call<T>(method: Method, path: string, body: unknown, opts: Option
   if (!transport) throw new ApiError('not_ready', 'Open GupMail from the app');
   // Every action carries an Idempotency-Key; callers pass the same key when retrying the same action.
   const idempotencyKey = method === 'GET' ? null : (opts.idempotencyKey ?? newId());
-  const res = await transport({ method, path, body: body ?? null, idempotencyKey, timeoutMs: opts.timeoutMs ?? TIMEOUT.normal });
+  return answer<T>(await transport({ method, path, body: body ?? null, idempotencyKey, timeoutMs: opts.timeoutMs ?? TIMEOUT.normal }));
+}
+
+/** The PC's answer as the result, or the ApiError it stands for. */
+export function answer<T>(res: RawResponse): T {
   if (res.status >= 200 && res.status < 300) return res.json as T;
   const raw = (res.json as { error?: unknown } | null)?.error;
   const env = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as { code?: unknown; message?: unknown; retryAfter?: unknown } & Record<string, unknown>;
@@ -86,6 +90,8 @@ export interface Status {
   counts: Record<string, number>;
   sync: { ok: boolean; problems: { accountId: number; status: string; detail: string }[] };
   ai: { enabled: boolean; busy: boolean; lastError: string | null; queue: number };
+  /** businessMail: #331, autoDraft: #344. An older PC sends no `settings`/field and behaves as on. */
+  settings?: { businessMail?: boolean; autoDraft?: boolean };
 }
 
 export interface Triage {
@@ -94,6 +100,12 @@ export interface Triage {
 }
 export interface Address { name?: string | null; address: string }
 
+/** docs/phone-api.md "Sender verification". Only `status: "warning"` shows anything; the rest is information. */
+export interface Verification {
+  status: string; auth: string; reason: string | null; reasons: { code: string; text: string }[];
+  lookalikeOf: string | null; sensitiveCategory: string | null; strong: boolean;
+}
+
 /** One conversation in a list: its newest shown message plus the conversation's unread/star state. */
 export interface ThreadRow {
   id: number; accountId: number; threadId: number;
@@ -101,6 +113,7 @@ export interface ThreadRow {
   subject: string | null; snippet: string | null; date: number; count: number;
   unread: boolean; flagged: boolean; inInbox: boolean; hasAttachments: boolean;
   triage: Triage | null; draftId: number | null;
+  verification?: Verification | null;
 }
 export interface Page { threads: ThreadRow[]; nextCursor: string | null }
 
@@ -111,6 +124,7 @@ export interface Message {
   subject: string | null; date: number; seen: boolean; flagged: boolean; inInbox: boolean;
   text: string | null; html: string | null; remoteImages: number;
   attachments: Attachment[]; listUnsubscribe: string | null; triage: Triage | null;
+  verification?: Verification | null;
 }
 export interface Extracted { id: number; messageId: number; threadId: number; kind: string; title: string | null; amount: string | null; dueAt: number | null; value: string | null }
 export interface Sender { addr: string; name: string | null; received: number; firstAt: number | null; sentTo: number; rules: string[] }
@@ -121,6 +135,10 @@ export interface ThreadDetail {
 }
 
 export interface Check { ok: boolean; title: string; detail?: string | null }
+/** A file on a draft (docs/phone-api.md "Attachments on a draft"); origin `forward` = kept from a forwarded email. */
+export interface DraftFile { id: number; filename: string; contentType: string | null; size: number; origin: string }
+/** How much the draft's account takes; `over` = it would probably bounce (Send asks once more). */
+export interface AttachLimit { maxBytes: number; usedBytes: number; over: boolean; note: string }
 /** docs/phone-api.md "Draft". `version` changes whenever what would be sent (or its checks) changes. */
 export interface Draft {
   id: number; accountId: number; replyToMessageId: number | null; threadId: number | null;
@@ -128,6 +146,7 @@ export interface Draft {
   status: string; origin: string; note: string | null; error: string | null;
   unfamiliar: unknown[]; checks: Check[]; flags: string[]; firstContact: boolean; createdAt: number;
   original: { fromName: string | null; fromAddr: string; subject: string | null; snippet: string | null; date: number } | null;
+  attachments: DraftFile[]; attachLimit: AttachLimit | null;
   version: string; updatedAt: number;
 }
 export interface SendResult {
@@ -143,7 +162,9 @@ export interface Today {
   generatedAt: number; headline: string;
   needsYou: ThreadRow[]; money: ThreadRow[]; security: ThreadRow[]; deliveries: ThreadRow[]; clients: ThreadRow[];
   drafts: DraftSummary[]; extracted: Extracted[]; waiting: ThreadRow[];
-  quietCount: number; quietBreakdown: Record<string, number>; unsubSuggestions: number;
+  /** Mail of the last 24 hours sorted away without bothering the owner (#344; an older PC sends only the quiet* names). */
+  sortedAwayCount?: number; sortedAwayBreakdown?: Record<string, number>;
+  unsubSuggestions: number;
 }
 
 export interface UndoBlock { action: string; messageIds: number[] }

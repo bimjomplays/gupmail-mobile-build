@@ -11,15 +11,20 @@
 //      409 stale reloads the draft and shows what changed; 502 shows why it failed; no answer checks the draft's
 //      status with a GET and says plainly whether it went out. Every next try is a new press + a new Face ID.
 // Inputs are read-only while anything runs, so what the owner confirmed is what is on screen.
-import { ApiError, newKey, type Address, type Draft, type SendResult } from '../api.ts';
-import { confirmDecision } from '../bridge.ts';
+//
+// Files (docs/phone-api.md "Attachments on a draft"): Photos / Files open the native picker; the bytes stay native and
+// go from there to the PC one file at a time (each with its own Idempotency-Key, kept for Try again). A new or edited
+// draft is saved first. Every file shows its name and size, the total against the account's limit, and the PC's
+// note; over the limit, Send asks "Too big: send anyway?" once for that version before the usual two presses.
+import { ApiError, newKey, type Address, type Draft, type DraftFile, type SendResult } from '../api.ts';
+import { confirmDecision, discardPicks, pickFiles, type PickedFile } from '../bridge.ts';
 import { append, h, replace, type Child } from '../dom.ts';
 import {
-  createDraft, dismissDraft, draftOf, editDraft, formatAddresses, getDraft, parseAddresses, rewriteDraft, sendDraft,
-  type DraftChanges,
+  addFile, CAPS, createDraft, dismissDraft, draftOf, editDraft, formatAddresses, getDraft, parseAddresses, removeFile,
+  rewriteDraft, sendDraft, type DraftChanges,
 } from '../draft-api.ts';
 import { onPcEvent } from '../events.ts';
-import { fullDate, plural, who } from '../format.ts';
+import { fullDate, plural, sendSize, who } from '../format.ts';
 import { icon } from '../icons.ts';
 import { account, accounts, loadStatus } from '../state.ts';
 import { sheet } from '../ui/sheet.ts';
@@ -31,6 +36,8 @@ export const ARM_MS = 4_000;
 /** A second press sooner than this after arming is the same tap twice, not a decision. */
 export const DOUBLE_TAP_MS = 400;
 const EDITABLE = new Set(['pending', 'failed']);
+/** GupMail's own caps (CAPS: 50 MiB a file and a draft) as the owner reads them */
+const CAP_TEXT = '50 MB';
 
 /** What a new draft starts from (a blank reply or a new email); nothing is on the PC until Save. */
 export interface Seed { accountId: number; to: Address[]; cc: Address[]; subject: string; replyToMessageId: number | null; original: Draft['original'] }
@@ -46,7 +53,17 @@ export interface EditorOpts {
   intro?: string;
 }
 
-type Busy = '' | 'save' | 'rewrite' | 'dismiss' | 'confirm' | 'send' | 'check';
+/** The one-tap changes, same list and instructions as the desktop's Drafts rail. */
+const ADJUST: [string, string][] = [
+  ['Shorter', 'Make it shorter.'], ['Longer', 'Make it a bit longer and more complete.'],
+  ['More casual', 'Make it more casual and relaxed.'], ['More formal', 'Make it more formal and polished.'],
+  ['Warmer', 'Make it warmer and friendlier.'], ['More direct', 'Make it more direct; get to the point.'],
+];
+
+type Busy = '' | 'save' | 'rewrite' | 'dismiss' | 'confirm' | 'send' | 'check' | 'pick' | 'attach';
+
+/** A picked file on its way to the PC, or one that didn't make it (Try again with the same key, or Remove). */
+interface Pending { pick: PickedFile; key: string; state: 'waiting' | 'uploading' | 'failed'; why?: string }
 
 interface Form { accountId: number; to: string; cc: string; subject: string; body: string }
 
@@ -63,6 +80,8 @@ export function draftChanges(a: Draft, b: Draft): { label: string; detail?: Chil
   if (formatAddresses(a.cc) !== formatAddresses(b.cc)) out.push({ label: `Cc: ${formatAddresses(b.cc) || 'nobody'}` });
   if (a.subject !== b.subject) out.push({ label: `Subject: ${b.subject || '(no subject)'}` });
   if (a.body !== b.body) out.push({ label: 'Message text', detail: lineDiff(a.body, b.body) });
+  const ids = (d: Draft) => d.attachments.map((f) => f.id).join();
+  if (ids(a) !== ids(b)) out.push({ label: `Files: ${b.attachments.map((f) => f.filename).join(', ') || 'none'}` });
   const fails = (d: Draft) => new Set(d.checks.filter((c) => !c.ok).map((c) => c.title));
   const fa = fails(a), fb = fails(b);
   const added = [...fb].filter((t) => !fa.has(t));
@@ -102,6 +121,13 @@ export function mountEditor(o: EditorOpts): () => void {
   let armedAt = 0;
   /** the owner's own unsaved values when a newer version arrived (offered back with "Put my changes back") */
   let mine: Form | null = null;
+  /** picked files not on the draft yet */
+  let pending: Pending[] = [];
+  /** a forwarded email's file armed for removal (the phone can't add it back), and when */
+  let armedFile: { id: number; at: number } | null = null;
+  let fileTimer: ReturnType<typeof setTimeout> | undefined;
+  /** the version the owner said "Send anyway" to while it was over its account's limit */
+  let overOk: string | null = null;
 
   /* ---- the frame (built once: typing never loses the caret to a repaint) ---- */
   const sub = h('p', { class: 'screen-sub draft-sub' });
@@ -116,10 +142,20 @@ export function mountEditor(o: EditorOpts): () => void {
   const body = h('textarea', { class: 'input body', rows: 8, maxlength: 100_000, 'aria-label': 'Message', 'data-field': 'body', placeholder: 'Write your email' });
   const fieldErr = h('p', { class: 'warn-text field-err', role: 'alert', hidden: true });
   const originalBox = h('div');
-  const rewriteBtn = h('button', { class: 'btn', type: 'button', 'data-act': 'rewrite' }, icon('sparkle'), 'Rewrite');
+  const filesBox = h('section', { class: 'card files', 'aria-label': 'Attachments', 'data-files': '' });
+  const photosBtn = h('button', { class: 'btn', type: 'button', 'data-act': 'photos', onclick: () => void attachFrom('photos') }, icon('image'), 'Photos');
+  const filesBtn = h('button', { class: 'btn', type: 'button', 'data-act': 'files', onclick: () => void attachFrom('files') }, icon('clip'), 'Files');
+  // the chat step of the one reply flow (same words as the desktop's composer): tell Claude how to change the draft
+  const instr = h('input', { class: 'input', type: 'text', maxlength: 1000, enterkeyhint: 'send', autocomplete: 'off', 'aria-label': 'Tell Claude how to change it', 'data-field': 'instruction', placeholder: 'Tell Claude how to change it: "shorter", "say no politely"…' });
+  const rewriteBtn = h('button', { class: 'btn', type: 'submit', 'data-act': 'rewrite' }, icon('sparkle'), 'Rewrite');
+  const adjustBtns = ADJUST.map(([label, text]) => h('button', { class: 'chip quick-pick', type: 'button', 'data-adjust': label, onclick: () => { if (!busy) void rewrite(text); } }, label));
+  const chat = h('form', { class: 'chat card', 'data-chat': '' },
+    h('span', { class: 'k' }, h('span', { class: 'aitag' }, 'Claude'), ' · change it, or edit it yourself above'),
+    h('div', { class: 'chat-row' }, instr, rewriteBtn),
+    h('div', { class: 'quick' }, ...adjustBtns));
   const discardBtn = h('button', { class: 'btn danger', type: 'button', 'data-act': 'discard' }, icon('trash'), 'Discard');
   const mainBtn = h('button', { class: 'btn primary', type: 'button', 'data-act': 'send' });
-  const actionsBar = h('div', { class: 'editor-actions' }, rewriteBtn, discardBtn, mainBtn);
+  const actionsBar = h('div', { class: 'editor-actions' }, discardBtn, mainBtn);
   const never = h('p', { class: 'never' }, icon('shield'), 'Nothing is sent until you press Send twice and pass Face ID.');
   const fields = h('div', { class: 'fields card' },
     h('label', { class: 'field' }, h('span', { class: 'k' }, 'From'), from),
@@ -128,7 +164,7 @@ export function mountEditor(o: EditorOpts): () => void {
     h('label', { class: 'field' }, h('span', { class: 'k' }, 'Subject'), subject),
     fieldErr);
   const editor = h('div', { class: 'view editor', 'data-editor': '' },
-    sub, notice, statusBox, checksBox, fields, flagsBox, body, originalBox, never, actionsBar);
+    sub, notice, statusBox, checksBox, fields, flagsBox, body, filesBox, chat, originalBox, never, actionsBar);
   replace(host, editor);
 
   /* ---- form <-> draft ---- */
@@ -247,7 +283,47 @@ export function mountEditor(o: EditorOpts): () => void {
       })) : null);
   }
 
+  /** The files: each with its size (and remove), the ones still on their way, the total against the limit. */
+  function paintFiles(): void {
+    const d = saved;
+    const list = d?.attachments ?? [];
+    const lim = d?.attachLimit ?? null;
+    const canEdit = editable() && busy === '' && !unknown;
+    filesBox.hidden = !editable() && !list.length;
+    const used = lim ? lim.usedBytes : list.reduce((n, f) => n + f.size, 0);
+    const head = list.length ? `Files · ${plural(list.length, 'file')} · ${sendSize(used)}${lim ? ` of ${sendSize(lim.maxBytes)}` : ''}` : 'Files';
+    const fileRow = (f: DraftFile) => {
+      const armedNow = armedFile?.id === f.id;
+      return h('li', { class: `file${f.origin === 'forward' ? ' forwarded' : ''}`, 'data-file': f.id, 'data-origin': f.origin },
+        icon('clip'),
+        h('span', { class: 'grow' }, h('span', { class: 'file-name' }, f.filename),
+          h('small', null, [sendSize(f.size), f.origin === 'forward' ? 'from the forwarded email' : ''].filter(Boolean).join(' · '))),
+        editable() ? h('button', { class: `btn file-x${armedNow ? ' armed' : ''}`, type: 'button', 'data-act': 'remove-file', 'data-armed': String(armedNow),
+          'aria-label': armedNow ? `Press again to remove ${f.filename}` : `Remove ${f.filename}`, disabled: !canEdit,
+          onclick: () => void remove(f) }, armedNow ? 'Remove?' : icon('trash')) : null);
+    };
+    const pendingRow = (p: Pending) => h('li', { class: `file pending ${p.state}`, 'data-pending': p.state, 'data-pick': p.pick.pickId },
+      icon(p.state === 'failed' ? 'alert' : 'clip'),
+      h('span', { class: 'grow' }, h('span', { class: 'file-name' }, p.pick.filename),
+        h('small', p.state === 'failed' ? { class: 'warn-text' } : null,
+          p.state === 'uploading' ? `Attaching… ${sendSize(p.pick.size)}` : p.state === 'waiting' ? `Waiting · ${sendSize(p.pick.size)}` : `Not attached: ${p.why ?? 'try again'}`)),
+      p.state === 'failed' ? h('span', { class: 'file-acts' },
+        h('button', { class: 'btn', type: 'button', 'data-act': 'retry-file', disabled: busy !== '' || unknown, onclick: () => void retryFile(p) }, 'Try again'),
+        h('button', { class: 'btn file-x', type: 'button', 'data-act': 'drop-file', 'aria-label': `Don't attach ${p.pick.filename}`, disabled: busy !== '',
+          onclick: () => { pending = pending.filter((x) => x !== p); void discardPicks([p.pick.pickId]); paintFiles(); } }, icon('trash'))) : null);
+    replace(filesBox,
+      h('span', { class: 'k' }, head),
+      list.length || pending.length ? h('ul', { class: 'file-list', 'aria-label': 'Files that go with it' }, ...list.map(fileRow), ...pending.map(pendingRow)) : null,
+      lim?.over ? h('p', { class: 'limit-over', role: 'alert', 'data-limit': 'over' }, icon('alert'),
+        h('span', null, h('strong', null, 'Too big for this inbox. '), `${sendSize(lim.usedBytes)} of files, ${sendSize(lim.maxBytes)} at most: it would probably bounce. Remove some, or Send asks once more.`)) : null,
+      lim?.note && (list.length || pending.length) ? h('p', { class: 'hint', 'data-limit-note': '' }, lim.note) : null,
+      editable() ? h('div', { class: 'attach-row' }, photosBtn, filesBtn) : null);
+    photosBtn.disabled = !canEdit;
+    filesBtn.disabled = !canEdit;
+  }
+
   function paintControls(): void {
+    paintFiles();
     const canEdit = editable() && busy === '' && !unknown;
     for (const el of [to, cc, subject, body]) el.readOnly = !canEdit;
     from.disabled = !canEdit;
@@ -258,8 +334,8 @@ export function mountEditor(o: EditorOpts): () => void {
     actionsBar.hidden = !editable();
     never.hidden = !editable();
     const isDirty = dirty();
-    rewriteBtn.hidden = !isReply();
-    rewriteBtn.disabled = busy !== '' || unknown;
+    chat.hidden = !isReply() || !editable();
+    for (const el of [instr, rewriteBtn, ...adjustBtns]) el.disabled = busy !== '' || unknown;
     rewriteBtn.classList.toggle('spin', busy === 'rewrite');
     discardBtn.disabled = busy !== '' || unknown;
     replace(discardBtn, icon('trash'), armed === 'discard' ? 'Press again to discard' : 'Discard');
@@ -275,7 +351,7 @@ export function mountEditor(o: EditorOpts): () => void {
     } else {
       mainBtn.dataset.act = 'send';
       const label = busy === 'confirm' ? 'Confirm with Face ID…' : busy === 'send' ? 'Sending…' : busy === 'check' ? 'Checking…'
-        : armed === 'send' ? 'Press again to send' : 'Send';
+        : armed === 'send' ? 'Press again to send' : saved.attachLimit?.over ? 'Send (too big)' : 'Send';
       replace(mainBtn, icon('send'), label);
       mainBtn.disabled = busy !== '' || unknown || saved.to.length === 0;
       mainBtn.title = saved.to.length === 0 ? 'Add someone to send it to' : '';
@@ -389,25 +465,6 @@ export function mountEditor(o: EditorOpts): () => void {
   }
 
   /* ---- rewrite ---- */
-  const QUICK = ['Shorter', 'More formal', 'Friendlier', 'Say no politely', 'Fix spelling and grammar'];
-  function openRewrite(): void {
-    const input = h('textarea', { class: 'input', rows: 3, maxlength: 1000, 'aria-label': 'How should Claude change it?', placeholder: 'e.g. Shorter, and mention the gallery page' });
-    const go = h('button', { class: 'btn primary', type: 'button', 'data-act': 'rewrite-go', onclick: () => {
-      const text = input.value.trim();
-      if (!text) { input.focus(); return; }
-      close();
-      void rewrite(text);
-    } }, icon('sparkle'), 'Rewrite it');
-    const close = sheet({
-      title: 'Ask Claude to rewrite it', label: 'Rewrite',
-      body: [h('p', { class: 'hint' }, 'Claude rewrites this draft; you read it again before sending. Your unsaved changes are saved first.'),
-        h('div', { class: 'quick' }, ...QUICK.map((q) => h('button', { class: 'chip quick-pick', type: 'button', onclick: () => { input.value = q; input.focus(); } }, q))),
-        input],
-      actions: [go],
-    });
-    input.focus();
-  }
-
   async function rewrite(instruction: string): Promise<void> {
     if (busy) return;
     if (!saved || dirty()) { if (!(await save())) return; }
@@ -432,6 +489,190 @@ export function mountEditor(o: EditorOpts): () => void {
       paintControls();
       showError('Not rewritten', e);
     }
+  }
+
+  /* ---- files ---- */
+
+  /** Photos / Files: the native picker, then each picked file to the PC. A new or edited draft is saved first (the
+   *  files go on the saved draft, and its version changes with every file). */
+  async function attachFrom(source: 'photos' | 'files'): Promise<void> {
+    if (busy || unknown || !editable()) return;
+    disarm();
+    // the picker and native's copying of what was picked (iCloud photos may download first): nothing else meanwhile
+    busy = 'pick';
+    paintControls();
+    const picked = await pickFiles(source);
+    busy = '';
+    if (dead || unknown || !editable()) {
+      if (picked && picked !== 'unavailable') void discardPicks(picked.files.map((f) => f.pickId));
+      if (!dead) paintControls();
+      return;
+    }
+    paintControls();
+    if (picked === 'unavailable') {
+      say('warn', 'Attaching works in the GupMail app', h('p', null, 'Open this draft in the app on your iPhone to add photos or files.'));
+      return;
+    }
+    if (!picked) return;   // cancelled: nothing changes
+    const notes: string[] = [];
+    if (picked.tooBig.length) notes.push(`Too big to attach (GupMail takes ${CAP_TEXT} per file): ${picked.tooBig.map((f) => `${f.filename} (${sendSize(f.size)})`).join(', ')}.`);
+    if (picked.failed.length) notes.push(`Couldn't be read on the phone: ${picked.failed.join(', ')}.`);
+    // GupMail's own caps for a whole draft: what doesn't fit is left out before anything is sent
+    let total = (saved?.attachments ?? []).reduce((n, f) => n + f.size, 0) + pending.reduce((n, p) => n + p.pick.size, 0);
+    let count = (saved?.attachments.length ?? 0) + pending.length;
+    const take: PickedFile[] = [];
+    const skip: PickedFile[] = [];
+    for (const f of picked.files) {
+      if (count + 1 > CAPS.maxFiles || total + f.size > CAPS.maxDraftBytes) { skip.push(f); continue; }
+      take.push(f);
+      total += f.size;
+      count++;
+    }
+    if (skip.length) {
+      notes.push(`Left out (one email takes ${CAP_TEXT} and ${CAPS.maxFiles} files at most): ${skip.map((f) => f.filename).join(', ')}.`);
+      void discardPicks(skip.map((f) => f.pickId));
+    }
+    if (!take.length) {
+      if (notes.length) say('warn', 'Nothing attached', ...notes.map((n) => h('p', null, n)));
+      return;
+    }
+    pending.push(...take.map((pick): Pending => ({ pick, key: newKey(), state: 'waiting' })));
+    await uploadWaiting(notes);
+  }
+
+  /** A file that didn't make it: again with its own key (if the PC took it after all, it answers from its record). */
+  async function retryFile(p: Pending): Promise<void> {
+    if (busy || unknown || !pending.includes(p)) return;
+    p.state = 'waiting';
+    await uploadWaiting([]);
+  }
+
+  async function uploadWaiting(notes: string[]): Promise<void> {
+    if (!saved || dirty()) {
+      paintFiles();
+      if (!(await save())) {
+        for (const p of pending) if (p.state === 'waiting') { p.state = 'failed'; p.why = 'the draft wasn\'t saved'; }
+        if (!dead) paintFiles();
+        return;
+      }
+    }
+    if (dead || !saved) return;
+    busy = 'attach';
+    disarm();
+    quiet();
+    paintControls();
+    let added = 0;
+    let closed = false;
+    for (const p of pending.filter((x) => x.state === 'waiting')) {
+      if (closed) { p.state = 'failed'; p.why = 'this draft can\'t be changed any more'; continue; }
+      p.state = 'uploading';
+      paintFiles();
+      try {
+        const d = await addFile(saved.id, p.pick, p.key);
+        if (dead) return;
+        pending = pending.filter((x) => x !== p);
+        saved = d;   // the same text with the file on it: a new version, checked again
+        added++;
+      } catch (e) {
+        if (dead) return;
+        if (e instanceof ApiError && e.code === 'gone') {
+          pending = pending.filter((x) => x !== p);
+          notes.push(`${p.pick.filename} isn't on the phone any more: pick it again.`);
+        } else if (e instanceof ApiError && [400, 404, 413, 415, 422].includes(e.status) && e.code !== 'not_editable') {
+          // the PC's final no: native has let go of the file, so there is nothing to try again
+          pending = pending.filter((x) => x !== p);
+          notes.push(`${p.pick.filename} wasn't attached: ${fileError(e)}.`);
+        } else {
+          p.state = 'failed';
+          p.why = fileError(e);
+          if (e instanceof ApiError && e.code === 'not_editable') closed = true;
+        }
+      }
+      if (!dead) paintFiles();
+    }
+    if (dead) return;
+    // an answer replayed from the PC's record (a Try again the PC had already taken) holds the draft as it was then:
+    // read the current one
+    if (added) { try { const d = await getDraft(saved.id); if (dead) return; saved = d; } catch { /* the uploads' own answer stands */ } }
+    busy = '';
+    paint();
+    if (closed) { await reread('Not attached: this draft can\'t be changed any more'); return; }
+    const failed = pending.filter((x) => x.state === 'failed').length;
+    const extra = notes.map((n) => h('p', null, n));
+    if (failed) say('warn', `${plural(failed, 'file')} not attached`, h('p', null, 'Try again, or remove it.'), ...extra);
+    else if (saved.attachLimit?.over) say('warn', 'Attached, but too big for this inbox', h('p', null, saved.attachLimit.note || 'It would probably bounce.'), ...extra);
+    else if (added) say(extra.length ? 'warn' : 'ok', added === 1 ? 'Attached' : `Attached ${plural(added, 'file')}`, h('p', null, 'Checked again with the files on it.'), ...extra);
+    else if (extra.length) say('warn', 'Nothing attached', ...extra);
+  }
+
+  function fileError(e: unknown): string {
+    if (e instanceof ApiError) {
+      if (e.status === 413) return `too big for GupMail (${CAP_TEXT} per file and per email)`;
+      if (e.code === 'not_editable') return 'this draft can\'t be changed any more';
+      if (e.status === 404) return 'this draft is gone from the PC';
+      if (e.kind === 'client' && e.message) return e.message;
+    }
+    return errorText(e).title;
+  }
+
+  /** Takes a file off. One press for an uploaded one (it can be picked again); a forwarded email's file needs a
+   *  second press, since the phone can't add it back. */
+  async function remove(f: DraftFile): Promise<void> {
+    if (busy || unknown || !saved || !editable()) return;
+    if (f.origin === 'forward') {
+      if (armedFile?.id !== f.id) {
+        armedFile = { id: f.id, at: Date.now() };
+        clearTimeout(fileTimer);
+        fileTimer = setTimeout(() => { armedFile = null; if (!dead) paintFiles(); }, ARM_MS);
+        paintFiles();
+        return;
+      }
+      if (Date.now() - armedFile.at < DOUBLE_TAP_MS) return;
+    }
+    armedFile = null;
+    clearTimeout(fileTimer);
+    // the removal makes a new version: unsaved edits go first, or their Save would meet a "changed meanwhile"
+    if (dirty() && !(await save())) return;
+    if (dead || !saved) return;
+    busy = 'attach';
+    disarm();
+    paintControls();
+    try {
+      const d = await removeFile(saved.id, f.id);
+      if (dead) return;
+      busy = '';
+      saved = d;
+      paint();
+      say('ok', `Removed ${f.filename}`, h('p', null, 'Checked again without it.'));
+    } catch (e) {
+      busy = '';
+      if (dead) return;
+      if (e instanceof ApiError && (e.code === 'not_editable' || e.status === 404)) { await reread(e.status === 404 ? 'That file was already gone' : 'Not removed: this draft can\'t be changed any more'); return; }
+      paintControls();
+      showError('Not removed', e);
+    }
+  }
+
+  /** Over the account's limit: asked once per version, before the usual two presses and Face ID. */
+  function askTooBig(): void {
+    const d = saved;
+    const lim = d?.attachLimit;
+    if (!d || !lim) return;
+    const close = sheet({
+      title: 'Too big: send anyway?',
+      body: [
+        h('p', null, `${sendSize(lim.usedBytes)} of files; this inbox takes ${sendSize(lim.maxBytes)}. It will probably bounce.`),
+        lim.note ? h('p', { class: 'hint' }, lim.note) : null,
+        h('p', null, 'Nothing is cut or left out. Removing a file is the safer way.'),
+      ],
+      actions: [h('button', { class: 'btn primary', type: 'button', 'data-act': 'send-anyway', onclick: () => {
+        close();
+        if (dead || saved !== d || busy) return;
+        overOk = d.version;
+        arm('send');
+      } }, 'Send anyway')],
+      cancel: 'Not now',
+    });
   }
 
   /* ---- discard ---- */
@@ -462,6 +703,7 @@ export function mountEditor(o: EditorOpts): () => void {
   async function send(): Promise<void> {
     const d = saved;
     if (!d || busy || unknown || dirty() || !EDITABLE.has(d.status)) return;
+    if (d.attachLimit?.over && overOk !== d.version) return;   // "Too big: send anyway?" comes first
     busy = 'confirm';
     quiet();
     paintControls();
@@ -574,7 +816,13 @@ export function mountEditor(o: EditorOpts): () => void {
   for (const el of [to, cc, subject]) el.addEventListener('input', edited);
   from.addEventListener('change', edited);
   body.addEventListener('input', () => { grow(); edited(); });
-  rewriteBtn.addEventListener('click', () => { if (!busy) openRewrite(); });
+  chat.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    if (busy) return;
+    const text = instr.value.trim();
+    instr.value = '';
+    void rewrite(text || 'Improve it.');   // blank = Claude's own pass, like the desktop
+  });
   discardBtn.addEventListener('click', () => {
     if (busy) return;
     if (armed !== 'discard' || armedFor !== saved) { arm('discard'); return; }
@@ -585,8 +833,13 @@ export function mountEditor(o: EditorOpts): () => void {
   mainBtn.addEventListener('click', () => {
     if (busy) return;
     if (mainBtn.dataset.act === 'save') { void save(); return; }
-    // first press only arms; the second must be for the same version, and not the same tap bouncing
-    if (armed !== 'send' || armedFor !== saved) { arm('send'); return; }
+    // first press only arms; the second must be for the same version, and not the same tap bouncing. Over the
+    // account's limit, the first press asks "Too big: send anyway?" and that answer arms it.
+    if (armed !== 'send' || armedFor !== saved) {
+      if (saved?.attachLimit?.over && overOk !== saved.version) { askTooBig(); return; }
+      arm('send');
+      return;
+    }
     if (Date.now() - armedAt < DOUBLE_TAP_MS) return;
     disarm();
     void send();
@@ -613,7 +866,11 @@ export function mountEditor(o: EditorOpts): () => void {
   return () => {
     dead = true;
     clearTimeout(armTimer);
+    clearTimeout(fileTimer);
     off();
+    // picked files that never went (one being sent finishes natively, and native drops it then)
+    const left = pending.filter((p) => p.state !== 'uploading').map((p) => p.pick.pickId);
+    if (left.length) void discardPicks(left);
     // leaving with unsaved edits: keep them on the PC (a draft only; Save's own rules apply)
     if (!discarded && !busy && !unknown && editable() && dirty() && changes() !== null && (saved || current().body.trim())) {
       const ch = changes()!;

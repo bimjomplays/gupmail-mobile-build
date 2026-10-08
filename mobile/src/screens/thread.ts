@@ -1,16 +1,19 @@
 // Thread reader: Claude's gist and what the sender needs from the owner, dates/amounts pulled out, who the sender is
 // and their sender rules; then every message (older ones folded), sanitized HTML in a sandboxed frame (mail-frame.ts),
 // remote pictures off until "Show pictures" (refetch with images=1, not remembered), attachment list. A tapped link
-// shows its real address first (link-sheet.ts). Archive / Snooze / Reply on top. GET /v1/threads/:threadId.
+// shows its real address first (link-sheet.ts). A message whose sender couldn't be verified carries a banner (ui/verify.ts;
+// a warning only, nothing is hidden). Archive / Snooze / Reply on top. GET /v1/threads/:threadId.
 import { api, type ActResult, type Address, type Attachment, type Message, type ThreadDetail, type Triage } from '../api.ts';
 import { actThread, undo, undoOf } from '../actions.ts';
+import { forwardMessage } from '../draft-api.ts';
 import { append, h, type Child } from '../dom.ts';
 import { onPcEvent } from '../events.ts';
 import { arr, categoryLabel, dueDate, fileSize, fullDate, kindLabel, plural, ruleLabel, who } from '../format.ts';
 import { icon } from '../icons.ts';
 import { mailFrame, textBody } from '../mail-frame.ts';
-import { account, accounts, backHash, loadStatus } from '../state.ts';
+import { account, accounts, backHash, loadStatus, setDraftNote } from '../state.ts';
 import { openLinkSheet } from '../ui/link-sheet.ts';
+import { senderBanner, senderFlag } from '../ui/verify.ts';
 import { pickSnooze } from '../ui/snooze.ts';
 import { toast } from '../ui/toast.ts';
 import { errorText, loadView } from '../ui/view.ts';
@@ -102,13 +105,14 @@ export const thread: Screen = {
         if (open) { opened.add(m.id); fill(); } else opened.delete(m.id);
       } },
       h('span', { class: 'grow' }, h('strong', null, mine ? 'You' : who(m.fromName, m.fromAddr)), h('small', null, fullDate(m.date))),
+      mine ? null : senderFlag(m.verification),   // a folded message keeps its warning visible; open ones show the banner
       h('small', { class: 'msg-snippet' }, snippet));
       const replyTo = typeof m.replyTo === 'string' && m.replyTo && !m.replyTo.toLowerCase().includes(String(m.fromAddr).toLowerCase()) ? m.replyTo : null;
       const meta = h('div', { class: 'msg-meta' },
         h('p', { class: 'mono small' }, m.fromAddr),
         h('p', null, `to ${addrList(m.to) || 'nobody listed'}${arr(m.cc).length ? `, cc ${addrList(m.cc)}` : ''}`),
         replyTo ? h('p', { class: 'warn-text' }, `Replies go to ${replyTo}`) : null);
-      append(card, [top, meta, content]);
+      append(card, [top, mine ? null : senderBanner(m.verification), meta, content]);
       if (!folded) fill();
       return card;
     };
@@ -143,7 +147,8 @@ export const thread: Screen = {
           const c = await pickSnooze(title.textContent ?? '');
           if (c && !dead) void act(`Snoozed until ${c.label}`, 'Not snoozed', () => actThread(id, { action: 'snooze', until: c.until }));
         } }, icon('clock'), 'Snooze'),
-        h('button', { class: 'btn', type: 'button', onclick: () => ctx.navigate(`#/thread/${id}/reply`) }, icon('reply'), t.draftId ? 'Draft' : 'Reply'));
+        h('button', { class: 'btn', type: 'button', onclick: () => ctx.navigate(`#/thread/${id}/reply`) }, icon('reply'), t.draftId ? 'Draft' : 'Reply'),
+        h('button', { class: 'btn', type: 'button', 'data-act': 'forward', onclick: (e: Event) => void forward(ms[lastIdx], e.currentTarget as HTMLButtonElement) }, icon('forward'), 'Forward'));
 
       const pics: Child = blocked > 0 && !images
         ? h('div', { class: 'images-note', 'data-images': 'blocked' }, icon('image'),
@@ -158,6 +163,34 @@ export const thread: Screen = {
         pics,
         ...ms.map((m, i) => messageCard(m, i !== lastIdx && m.seen !== false && !opened.has(m.id))));
     };
+
+    /** Forward the newest email (like the desktop): a new draft with its attachments kept, opened to add who it goes
+     *  to. Nothing is sent. */
+    let forwarding = false;
+    async function forward(m: Message, btn: HTMLButtonElement): Promise<void> {
+      if (forwarding) return;   // one tap, one draft
+      forwarding = true;
+      btn.disabled = true;
+      btn.classList.add('spin');
+      try {
+        const r = await forwardMessage(m.id);
+        if (dead) return;
+        const kept = r.draft.attachments.filter((f) => f.origin === 'forward').length;
+        setDraftNote(r.draft.id, [
+          kept ? `Forwarded with ${plural(kept, 'attachment')} from the email.` : 'Forwarded.',
+          r.leftOut.length ? `Too big to keep: ${r.leftOut.join(', ')}.` : '',
+          'Add who it goes to, then Save.',
+        ].filter(Boolean).join(' '));
+        void loadStatus().catch(() => null);
+        ctx.navigate(`#/drafts/${r.draft.id}`);
+      } catch (e) {
+        if (!dead) toast({ text: `Not forwarded. ${errorText(e).title}.`, kind: 'error' });
+      } finally {
+        forwarding = false;
+        btn.disabled = false;
+        btn.classList.remove('spin');
+      }
+    }
 
     const view = loadView<ThreadDetail>(body, {
       navigate: ctx.navigate,

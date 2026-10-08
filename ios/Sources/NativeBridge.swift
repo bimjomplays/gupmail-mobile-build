@@ -43,7 +43,8 @@ private struct IssuedConfirm {
 /// ops: hello · request {method, path, body, idempotencyKey, timeoutMs} · pair {action: scan | paste | pending |
 ///      confirm | cancel} · unpair · lock · confirm {action: send, draftId, version, title | action: unsubscribe,
 ///      unsubscribeId, title} · openExternal {url} · copy {text, expiresIn} · push {action: status | enable | later |
-///      settings | sync, force}
+///      settings | sync, force} · attach {action: pick, source: photos | files | action: upload, pickId, draftId,
+///      idempotencyKey | action: discard, pickIds}
 ///
 /// The PC's address and the device token stay in here and in the iOS Keychain, never in JavaScript: `request` takes
 /// a method, an API path and a JSON body, this class adds the paired PC's address and the bearer token, makes the
@@ -54,6 +55,11 @@ private struct IssuedConfirm {
 /// Owner decisions need a fresh Face ID check each time: `confirm` runs it and remembers what it confirmed, and
 /// POST /v1/drafts/:id/send or POST /v1/unsubscribes/:id/unsubscribe leaves the phone only with a matching
 /// confirmation (used up), else the page gets a local 428 confirmation_required and nothing is sent.
+///
+/// Attachments: `attach pick` shows the Photos or Files picker and keeps what was picked natively (FilePicks); the page
+/// gets ids, names, types and sizes only. `attach upload` streams one picked file to the PC as the body of
+/// POST /v1/drafts/:draftId/attachments?filename=... (the page's Idempotency-Key, the answer as for `request`); the
+/// file's bytes never pass through the page.
 ///
 /// Apple push: this class also keeps the PC's copy of this phone's APNs device token current (POST
 /// /v1/push/register with the token, the profile's environment and the bundle id; DELETE when Push is lost), on every
@@ -69,7 +75,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// envelope version this build speaks; the page sends it as `v` and gets it back in every answer
     static let version = 1
     /// every op this build knows, in the order hello lists them
-    static let ops = ["hello", "request", "pair", "unpair", "lock", "confirm", "openExternal", "copy", "push"]
+    static let ops = ["hello", "request", "pair", "unpair", "lock", "confirm", "openExternal", "copy", "push", "attach"]
     /// the only ops that answer while the app is locked
     static let lockedOps: Set<String> = ["hello", "lock"]
     private static let methods: Set<String> = ["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -106,6 +112,8 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var presented: (() -> Void)?
     private var pairingInFlight = false
     private var push = PushSync()
+    /// files picked to attach, until they are uploaded (or dropped)
+    private let picks = FilePicks()
 
     init(lock: AppLock) {
         appLock = lock
@@ -166,6 +174,8 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             copy(args, ok: ok, fail: fail)
         case "push":
             pushOp(args, ok: ok, fail: fail)
+        case "attach":
+            attach(args, ok: ok, fail: fail)
         default:
             fail("unknown_op", "no such op")
         }
@@ -231,6 +241,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         pageReady = false
         cancelRequests(keepDecisions: true)
         closePresented()
+        picks.clear()
     }
 
     func pageDidLoad() {
@@ -730,6 +741,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         spent.removeAll()
         clockOffset = nil
         resetPush()
+        picks.clear()
         log.notice("unpaired")
         guard let old else { return ["paired": false, "pcForgot": false] }
         var forgot = false
@@ -992,6 +1004,128 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         change(&now)
         guard PairingStore.save(now) else { return }
         if pairing != nil { pairing = now }
+    }
+
+    // MARK: - attachments
+
+    /// attach {action: pick | upload | discard}
+    private func attach(_ a: [String: Any], ok: @escaping Reply, fail: @escaping Fail) {
+        switch a["action"] as? String {
+        case "pick":
+            pickFiles(a["source"] as? String, ok: ok, fail: fail)
+        case "upload":
+            upload(a, ok: ok, fail: fail)
+        case "discard":
+            if let ids = a["pickIds"] as? [String] {
+                for id in ids { picks.drop(id) }
+            } else {
+                picks.clear()
+            }
+            ok(["discarded": true])
+        default:
+            fail("bad_request", "attach takes pick, upload or discard")
+        }
+    }
+
+    /// The Photos or Files picker. Answers {state: "picked", files: [...]} (see FilePicks.keep) or
+    /// {state: "cancelled"}; closing it (lock, page reload) counts as cancelled.
+    private func pickFiles(_ source: String?, ok: @escaping Reply, fail: @escaping Fail) {
+        guard source == "photos" || source == "files" else { return fail("bad_request", "source is photos or files") }
+        guard presented == nil, let host else { return fail("busy", "Something else is open") }
+        var answered = false
+        let answer: ([String: Any]) -> Void = { r in
+            guard !answered else { return }
+            answered = true
+            ok(r)
+        }
+        let generation = picks.generation
+        let staged: ([FilePicks.Staged]?) -> Void = { [weak self] list in
+            guard let self else { return FilePicks.discard(list ?? []) }
+            self.presented = nil
+            guard let list, !list.isEmpty else { return answer(["state": "cancelled"]) }
+            // the page reloaded or the phone unpaired while the files were being copied: nobody will upload them
+            guard self.picks.generation == generation, !self.appLock.locked else {
+                FilePicks.discard(list)
+                return answer(["state": "cancelled"])
+            }
+            answer(["state": "picked", "files": self.picks.keep(list)])
+        }
+        let vc: UIViewController
+        if source == "photos" {
+            // `presented` stays set until the files are copied (staged): no second picker meanwhile
+            let pick = PhotoPick(limit: FilePicks.maxPerPick) { providers in
+                guard let providers else { return staged(nil) }
+                Task {
+                    var out: [FilePicks.Staged] = []
+                    for p in providers.prefix(FilePicks.maxPerPick) { out.append(await PhotoPick.load(p)) }
+                    staged(out)
+                }
+            }
+            presented = { pick.cancel() }
+            vc = pick.controller
+        } else {
+            let pick = FilesPick { urls in
+                guard let urls else { return staged(nil) }
+                Task {
+                    let out = await Task.detached { urls.prefix(FilePicks.maxPerPick).map { FilesPick.load($0) } }.value
+                    staged(out)
+                }
+            }
+            presented = { pick.cancel() }
+            vc = pick.controller
+        }
+        guard host.presentNative(vc) else {
+            presented = nil
+            return fail("busy", "Something else is open")
+        }
+    }
+
+    /// One picked file to a draft on the PC: POST /v1/drafts/:draftId/attachments?filename=<name> with the file as the
+    /// body and its type as Content-Type, under the page's Idempotency-Key (a retry with the same key and file is a
+    /// replay). Answers {status, body} like `request`. The pick is kept for a retry until the PC has answered for good.
+    private func upload(_ a: [String: Any], ok: @escaping Reply, fail: @escaping Fail) {
+        guard let pickId = a["pickId"] as? String, let draftId = Self.positiveInt(a["draftId"]),
+              let key = a["idempotencyKey"] as? String, Self.isKey(key) else {
+            return fail("bad_request", "upload needs pickId, draftId and an Idempotency-Key")
+        }
+        guard let pick = picks.get(pickId) else { return fail("gone", "That file isn't here any more. Pick it again.") }
+        let name = pick.filename.addingPercentEncoding(withAllowedCharacters: CharacterSet.ascii(plus: "-._~")) ?? "file"
+        let target = "/v1/drafts/\(draftId)/attachments?filename=\(name)"
+        guard PhoneAPI.isRequestTarget(target), PhoneAPI.special(target) == nil else {
+            return fail("bad_request", "only the phone API's own /v1/ paths")
+        }
+        // docs/phone-api.md: 30 s + 10 s per MB is plenty over the tailnet
+        let timeout = min(900, 30 + 10 * Double(pick.size) / 1_000_000)
+        requestSerial += 1
+        let serial = requestSerial
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let out = await self.sendUpload(pick, target: target, key: key, timeout: timeout)
+            self.requests[serial] = nil
+            switch out {
+            case .answer(let status, let body):
+                // the PC took it, or said no for good: a retry would need the owner to pick it again anyway
+                if (200..<300).contains(status) || ([400, 404, 413, 415, 422].contains(status)) { self.picks.drop(pickId) }
+                ok(["status": status, "body": Self.orNull(body)])
+            case .failure(let code):
+                fail(code, Self.failureText(code))
+            }
+        }
+        requests[serial] = (task, false)
+    }
+
+    private func sendUpload(_ pick: FilePicks.Pick, target: String, key: String, timeout: TimeInterval) async -> Out {
+        // a rotated token waiting for its first use: an ordinary request settles it first (switch over, or back)
+        if loadPairing()?.pendingToken != nil {
+            _ = await perform(method: "GET", target: "/v1/status", json: nil, key: nil, special: nil, timeout: 30)
+        }
+        guard let p = loadPairing() else { return .failure("not_paired") }
+        guard pick.size <= FilePicks.maxFileBytes else {
+            return Self.local(413, "too_large", "That file is bigger than GupMail takes (50 MB).")
+        }
+        let out = await client.upload(base: p.baseURL, token: p.token, target: target, file: pick.url,
+                                      contentType: pick.contentType, idempotencyKey: key, timeout: timeout)
+        return finish(out, secrets: [p.token, p.pendingToken].compactMap { $0 })
     }
 
     // MARK: - Safari, clipboard

@@ -1,9 +1,9 @@
-// Today: Claude's headline, what needs the owner (the queue, split like the desktop's Today), drafts waiting, the
+// Today: Claude's headline, what needs the owner (the queue, split like the desktop's Today), drafts ready (only while auto-draft is on), the
 // agenda (bills, packages, dates) and who hasn't answered yet. GET /v1/today; refetched quietly on PC events.
 import { api, ApiError, TIMEOUT, type DraftSummary, type Extracted, type ThreadRow, type Today } from '../api.ts';
 import { append, h, type Child } from '../dom.ts';
 import { onPcEvent } from '../events.ts';
-import { arr, categoryLabel, daysAgo, dueDate, kindLabel, plural, who } from '../format.ts';
+import { arr, autoDraft, businessMail, categoryLabel, daysAgo, dueDate, kindLabel, plural, who } from '../format.ts';
 import { icon, type IconName } from '../icons.ts';
 import { accounts, loadStatus, setListHash } from '../state.ts';
 import { threadRow } from '../ui/rows.ts';
@@ -63,7 +63,7 @@ export const today: Screen = {
       retryBaseMs: ctx.retryBaseMs,
       empty: { icon: 'today', title: 'Nothing needs you', hint: 'When something does, it shows up here.' },
       load: async () => {
-        if (!accounts().length) await loadStatus().catch(() => null);   // account names for the rows; Today works without
+        await loadStatus().catch(() => null);   // account names for the rows and the business-mail setting; Today works without
         return api.get<Today>('/v1/today');
       },
       same: (a, b) => JSON.stringify({ ...a, generatedAt: 0 }) === JSON.stringify({ ...b, generatedAt: 0 }),
@@ -88,21 +88,26 @@ export const today: Screen = {
               refresh.classList.remove('spin');
             }
           } }, icon('retry'));
-        const quiet = typeof t.quietCount === 'number' && t.quietCount > 0
-          ? `${plural(t.quietCount, 'email')} sorted away quietly in the last day${breakdown(t.quietBreakdown)}.` : null;
+        // sortedAway* since #344; an older PC only sends the quiet* names
+        const awayN = t.sortedAwayCount ?? (t as unknown as { quietCount?: number }).quietCount;
+        const awayBy = t.sortedAwayBreakdown ?? (t as unknown as { quietBreakdown?: unknown }).quietBreakdown;
+        const away = typeof awayN === 'number' && awayN > 0
+          ? `${plural(awayN, 'email')} sorted away in the last day${breakdown(awayBy)}.` : null;
         parts.push(h('div', { class: 'card claude brief' },
           h('div', { class: 'card-top' }, h('span', { class: 'k' }, h('span', { class: 'aitag' }, 'Claude'), ' · your day'), refresh),
           h('p', { class: 'headline' }, headline || 'No headline yet. Claude writes one once it has sorted your mail.'),
-          quiet ? h('p', null, quiet) : null));
+          away ? h('p', null, away) : null));
 
         let anything = headline !== '';
         for (const [key, title] of QUEUE) {
+          if (key === 'clients' && !businessMail()) continue;   // personal-only (settings.businessMail false): no Clients section
           const rows = arr<ThreadRow>(t[key]);
           if (!rows.length) continue;
           anything = true;
           parts.push(section(title, rows.length, h('div', { class: 'list rows' }, ...rows.map((r) => threadRow(r, { showAccount: multi })))));
         }
-        const drafts = arr<DraftSummary>(t.drafts);
+        // auto-draft off (settings.autoDraft false): no "drafts ready" list here; the Drafts tab still has every draft
+        const drafts = autoDraft() ? arr<DraftSummary>(t.drafts) : [];
         if (drafts.length) {
           anything = true;
           parts.push(section('Drafts waiting', drafts.length, h('div', { class: 'list' }, ...drafts.map(draftRow))));
@@ -122,7 +127,7 @@ export const today: Screen = {
           parts.push(h('a', { class: 'list row', href: '#/unsubscribes' }, icon('unsub'),
             h('span', { class: 'grow' }, `${plural(t.unsubSuggestions, 'sender')} you could unsubscribe from`), icon('chevron')));
         }
-        if (!anything && !(t.quietCount > 0)) return null;
+        if (!anything && !away) return null;
         return h('div', { class: 'view' }, ...parts);
       },
     });
@@ -138,6 +143,8 @@ function breakdown(b: unknown): string {
   const parts = Object.entries(b as Record<string, unknown>)
     .filter((e): e is [string, number] => typeof e[1] === 'number' && e[1] > 0)
     .sort((x, y) => y[1] - x[1])
-    .map(([k, n]) => `${n} ${categoryLabel(k).toLowerCase()}`);
+    .map(([k, n]) => [categoryLabel(k).toLowerCase(), n] as const)
+    .filter(([label]) => label)
+    .map(([label, n]) => `${n} ${label}`);
   return parts.length ? ` (${parts.join(', ')})` : '';
 }

@@ -2,12 +2,28 @@
 // send path is sendDraft(), which needs the version the owner saw and the confirm block from Face ID, and is sent
 // exactly once per press: no retry here, no retry loop anywhere (a lost answer is checked with a GET, never resent).
 import { withRetry } from './actions.ts';
-import { api, ApiError, TIMEOUT, type Address, type Check, type Draft, type SendResult } from './api.ts';
-import type { ConfirmBlock } from './bridge.ts';
+import { answer, api, ApiError, TIMEOUT, type Address, type AttachLimit, type Check, type Draft, type DraftFile, type SendResult } from './api.ts';
+import type { ConfirmBlock, PickedFile } from './bridge.ts';
 import { arr } from './format.ts';
+import { uploadPick } from './transport.ts';
 
 const str = (x: unknown): string => (typeof x === 'string' ? x : '');
 const id = (x: unknown): number | null => (typeof x === 'number' && Number.isSafeInteger(x) && x > 0 ? x : null);
+
+const size = (x: unknown): number => (typeof x === 'number' && Number.isSafeInteger(x) && x >= 0 ? x : 0);
+
+function files(x: unknown): DraftFile[] {
+  return arr<Record<string, unknown>>(x)
+    .filter((f) => f && typeof f === 'object' && id(f.id) !== null)
+    .map((f) => ({ id: f.id as number, filename: str(f.filename) || 'attachment', contentType: typeof f.contentType === 'string' ? f.contentType : null, size: size(f.size), origin: str(f.origin) || 'upload' }));
+}
+
+function limit(x: unknown): AttachLimit | null {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
+  const l = x as Record<string, unknown>;
+  if (!size(l.maxBytes)) return null;
+  return { maxBytes: size(l.maxBytes), usedBytes: size(l.usedBytes), over: l.over === true, note: str(l.note) };
+}
 
 function addresses(x: unknown): Address[] {
   return arr<Record<string, unknown>>(x)
@@ -35,6 +51,7 @@ export function normDraft(x: unknown): Draft | null {
       fromName: typeof o.fromName === 'string' ? o.fromName : null, fromAddr: str(o.fromAddr),
       subject: typeof o.subject === 'string' ? o.subject : null, snippet: typeof o.snippet === 'string' ? o.snippet : null, date: Number(o.date) || 0,
     } : null,
+    attachments: files(d.attachments), attachLimit: limit(d.attachLimit),
     version: d.version, updatedAt: Number(d.updatedAt) || 0,
   };
 }
@@ -95,6 +112,33 @@ export async function rewriteDraft(draftId: number, version: string, instruction
 /** Drop the draft (status dismissed). */
 export async function dismissDraft(draftId: number, version: string): Promise<void> {
   await withRetry((key) => api.post(`/v1/drafts/${draftId}/dismiss`, { version }, { idempotencyKey: key }));
+}
+
+/* ---- files on a draft (docs/phone-api.md "Attachments on a draft") ---- */
+
+/** GupMail's own caps (above every provider's limit, which only warns): over them the PC answers 413 / 422. */
+export const CAPS = { maxFileBytes: 52_428_800, maxDraftBytes: 52_428_800, maxFiles: 100 } as const;
+
+/**
+ * One picked file onto a draft. `key` is this file's own Idempotency-Key: a try that got no answer is sent again
+ * with it (here, and when the owner taps Try again), so the PC adds the file once. Answers the draft as it is now.
+ */
+export async function addFile(draftId: number, pick: PickedFile, key: string): Promise<Draft> {
+  const r = await withRetry(async (k) => answer<{ draft?: unknown }>(await uploadPick(pick.pickId, pick.size, draftId, k)), key);
+  return must(r?.draft);
+}
+
+/** Takes a file off a draft (also one kept from a forwarded email). */
+export async function removeFile(draftId: number, fileId: number): Promise<Draft> {
+  const r = await withRetry((key) => api.delete<{ draft?: unknown }>(`/v1/drafts/${draftId}/attachments/${fileId}`, { idempotencyKey: key }));
+  return must(r?.draft);
+}
+
+/** Forward an email: a new draft (nobody to send to yet) with the email's attachments kept. `leftOut` = files too
+ *  big to keep. The PC may need to fetch the email first (up to ~30 s). */
+export async function forwardMessage(messageId: number): Promise<{ draft: Draft; leftOut: string[] }> {
+  const r = await withRetry((key) => api.post<{ draft?: unknown; leftOut?: unknown }>(`/v1/messages/${messageId}/forward`, {}, { idempotencyKey: key, timeoutMs: 60_000 }));
+  return { draft: must(r?.draft), leftOut: arr<unknown>(r?.leftOut).filter((x): x is string => typeof x === 'string') };
 }
 
 /**

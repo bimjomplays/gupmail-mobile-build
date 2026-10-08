@@ -2,6 +2,7 @@
 // cookies or the Cache API: when the app is closed it is gone, and the next open asks the PC again.
 import { api, type Status } from './api.ts';
 import { learnPcClock } from './clock.ts';
+import { setAutoDraft, setBusinessMail } from './format.ts';
 
 export { pcNow, toPcTime } from './clock.ts';
 
@@ -19,6 +20,8 @@ export function onStatus(fn: () => void): () => void {
 export async function loadStatus(): Promise<Status> {
   const s = await api.get<Status>('/v1/status');
   last = s;
+  setBusinessMail(s?.settings?.businessMail !== false);
+  setAutoDraft(s?.settings?.autoDraft !== false);
   learnPcClock(s?.serverTime);
   for (const fn of listeners) fn();
   return s;
@@ -39,7 +42,16 @@ export function setListHash(h: string): void { listHash = h; }
 export function backHash(): string { return listHash; }
 
 /** Inbox view choices survive leaving the tab while the app runs (memory only). */
-export const inboxChoice: { tab: 'important' | 'all' | 'quiet'; account: number | null } = { tab: 'important', account: null };
+export const inboxChoice: { tab: 'important' | 'all' | 'low'; account: number | null } = { tab: 'important', account: null };
 
 /** Search screen choices (mode, last search, last question) survive a visit to a result (memory only). */
 export const searchChoice: { mode: 'mail' | 'ask'; q: string; ask: string } = { mode: 'mail', q: '', ask: '' };
+
+/** A one-time note for the next time a draft opens (a forward: which files came along, which were too big). */
+const draftNotes = new Map<number, string>();
+export function setDraftNote(draftId: number, text: string): void { draftNotes.set(draftId, text); }
+export function takeDraftNote(draftId: number): string | undefined {
+  const t = draftNotes.get(draftId);
+  draftNotes.delete(draftId);
+  return t;
+}

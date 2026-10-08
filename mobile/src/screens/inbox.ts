@@ -1,4 +1,4 @@
-// Inbox: Important / All / Quiet tabs, an account filter, cursor paging (GET /v1/threads), pull to refresh and live
+// Inbox: Important / All / Low priority tabs, an account filter, cursor paging (GET /v1/threads), pull to refresh and live
 // refresh on PC events. Swipe a row left to archive, right to snooze (picker); both offer Undo in a toast. Each swipe
 // is one action with one Idempotency-Key (actions.ts); Undo sends the PC's own `undo` block back as a new action.
 import { api, ApiError, type ActResult, type Page, type Status, type ThreadRow } from '../api.ts';
@@ -17,11 +17,11 @@ import type { Screen } from './types.ts';
 
 export const PAGE = 30;
 type Tab = typeof inboxChoice.tab;
-const TABS: [Tab, string][] = [['important', 'Important'], ['all', 'All'], ['quiet', 'Quiet']];
+const TABS: [Tab, string][] = [['important', 'Important'], ['all', 'All'], ['low', 'Low priority']];
 const EMPTY: Record<Tab, { title: string; hint: string }> = {
-  important: { title: 'Nothing important', hint: 'Mail that needs you shows up here. The rest waits in Quiet.' },
+  important: { title: 'Nothing important', hint: 'Mail that needs you shows up here. The rest waits in Low priority.' },
   all: { title: 'Inbox zero', hint: 'Nothing in the inbox.' },
-  quiet: { title: 'Nothing quiet', hint: 'Newsletters, promos and other low-key mail Claude sorted show up here.' },
+  low: { title: 'Nothing low priority', hint: 'Newsletters, promos and other mail nobody is waiting on show up here.' },
 };
 
 function query(cursor: string | null): string {
@@ -63,7 +63,7 @@ export const inbox: Screen = {
     const tabs = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Inbox view' });
     const paintTabs = () => {
       replace(tabs, ...TABS.map(([id, label]) => {
-        const n = id === 'quiet' ? count('quiet') : 0;
+        const n = id === 'low' ? count('low') : 0;
         return h('button', { type: 'button', role: 'tab', 'data-tab': id, 'aria-selected': String(inboxChoice.tab === id), 'aria-current': String(inboxChoice.tab === id),
           onclick: () => { if (inboxChoice.tab === id) return; inboxChoice.tab = id; paintTabs(); void view.reload(); } },
         label, n > 0 ? h('span', { class: 'n' }, String(n)) : null);

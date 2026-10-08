@@ -62,8 +62,8 @@ a.list.row { border-radius: var(--radius); }
 .state.small { min-height: 0; padding: 24px 8px; }
 
 /* thread */
-.toolbar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.toolbar .btn { padding: 0 8px; }
+.toolbar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.toolbar .btn { padding: 4px 2px; flex-direction: column; gap: 2px; font-size: var(--fs-micro); }
 .gist .gist-text { color: var(--text); font-size: var(--fs-body); }
 .gist .reason { font-size: var(--fs-small); color: var(--faint); }
 .asks h3 { font-size: var(--fs-small); color: var(--dim); }
@@ -205,3 +205,44 @@ a.list.row { border-radius: var(--radius); }
 .code-card[data-copied='true'] .code-state { color: var(--green); }
 .code-tools { display: flex; gap: 8px; }
 .code-tools .btn { flex: 1; }
+.chat { display: flex; flex-direction: column; gap: 8px; }
+.chat[hidden] { display: none; }
+.chat-row { display: flex; gap: 8px; }
+.chat-row .input { flex: 1; min-width: 0; }
+.chat-row .btn { padding: 0 12px; }
+
+/* files on a draft (editor) */
+.files { display: flex; flex-direction: column; gap: 8px; }
+.files[hidden] { display: none; }
+.file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.file { display: flex; align-items: center; gap: 10px; min-height: var(--tap); padding: 4px 4px 4px 10px; border-radius: var(--radius-sm); background: var(--card-hi); }
+.file > .ic { flex: none; color: var(--faint); }
+.file .grow { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file small { color: var(--faint); font-size: var(--fs-micro); }
+.file.pending { opacity: 0.85; }
+.file.pending.failed { border: 1px solid rgba(251, 191, 36, 0.45); }
+.file.pending.failed > .ic { color: var(--amber); }
+.file-acts { display: flex; gap: 6px; flex: none; }
+.file-acts .btn { padding: 0 10px; }
+.file-x { flex: none; min-width: var(--tap); padding: 0 8px; }
+.file-x.armed { color: var(--red); border-color: rgba(248, 113, 113, 0.5); }
+.limit-over { display: flex; gap: 8px; align-items: flex-start; margin: 0; color: var(--amber); font-size: var(--fs-small); }
+.limit-over .ic { flex: none; margin-top: 2px; }
+.attach-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+/* fake-sender warning: banner in the reader, small flag on rows and folded messages (warning only, nothing is hidden) */
+.sender-warn { display: flex; gap: 10px; align-items: flex-start; margin: 0 var(--pad) 8px; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.1); font-size: var(--fs-small); color: var(--dim); }
+.sender-warn > .ic { width: 20px; height: 20px; margin-top: 1px; flex: none; color: var(--amber); }
+.sender-warn .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.sender-warn strong { color: var(--amber); font-size: var(--fs-body); }
+.sender-warn .why { display: flex; flex-direction: column; gap: 4px; padding-left: 1.1em; list-style: disc; color: var(--text); }
+.sender-warn.strong { border-color: rgba(248, 113, 113, 0.65); background: rgba(248, 113, 113, 0.14); }
+.sender-warn.strong > .ic, .sender-warn.strong strong { color: var(--red); }
+.sender-warn .advice { color: var(--text); font-weight: 650; }
+.msg > .sender-warn:first-of-type { margin-top: 4px; }
+.msg.folded .sender-warn { display: none; }
+.msg-head .chip.unverified { align-self: flex-start; margin-top: 2px; }
+.msg:not(.folded) .msg-head .chip.unverified { display: none; }
+.chip.unverified { background: rgba(251, 191, 36, 0.14); color: var(--amber); }
+.chip.unverified.strong { background: rgba(248, 113, 113, 0.16); color: var(--red); }

@@ -6,6 +6,7 @@ import { h } from '../dom.ts';
 import { icon } from '../icons.ts';
 import { categoryLabel, shortDate, who } from '../format.ts';
 import { account } from '../state.ts';
+import { senderFlag } from './verify.ts';
 
 export interface RowOpts {
   /** Show the account's colour + name (more than one account, no account filter). */
@@ -35,7 +36,7 @@ export function threadRow(r: ThreadRow, o: RowOpts = {}): HTMLElement {
       h('span', { class: 'subject' }, r.subject || '(no subject)'),
       r.snippet ? h('span', { class: 'snippet' }, r.snippet) : null,
       h('span', { class: 'chips' },
-        dot, acct ? h('span', { class: 'chip plain' }, acct.name) : null,
+        senderFlag(r.verification), dot, acct ? h('span', { class: 'chip plain' }, acct.name) : null,
         cat ? h('span', { class: `chip cat-${/^[a-z_]+$/.test(r.triage?.category ?? '') ? r.triage!.category : 'other'}` }, cat) : null,
         r.draftId ? h('span', { class: 'chip draft' }, 'Draft ready') : null,
         r.flagged ? h('span', { class: 'chip icon-only', 'aria-label': 'Starred' }, icon('star')) : null,

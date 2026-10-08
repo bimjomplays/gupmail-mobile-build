@@ -5,8 +5,8 @@ import { api, ApiError, newKey, type ActResult, type UndoBlock, type Unsubscribe
 
 const RETRIES = 2;
 
-export async function withRetry<T>(send: (key: string) => Promise<T>): Promise<T> {
-  const key = newKey();
+/** `key`: the one an earlier try of this same action used (an upload tried again after no answer). */
+export async function withRetry<T>(send: (key: string) => Promise<T>, key = newKey()): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await send(key);

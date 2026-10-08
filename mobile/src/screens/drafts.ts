@@ -7,7 +7,7 @@ import { dismissDraft, getDraft, listDrafts } from '../draft-api.ts';
 import { onPcEvent } from '../events.ts';
 import { plural, shortDate, who } from '../format.ts';
 import { icon } from '../icons.ts';
-import { account, accounts, loadStatus } from '../state.ts';
+import { account, accounts, loadStatus, takeDraftNote } from '../state.ts';
 import { toast } from '../ui/toast.ts';
 import { errorText, loadView } from '../ui/view.ts';
 import { ARM_MS, DOUBLE_TAP_MS, mountEditor } from './editor.ts';
@@ -26,7 +26,7 @@ function draftRow(d: Draft, onDiscard: (d: Draft, row: HTMLElement) => void): HT
       icon(d.origin === 'ai' ? 'sparkle' : 'drafts'),
       h('span', { class: 'grow' },
         h('span', { class: 'agenda-title' }, d.subject || '(no subject)'),
-        h('small', null, `To ${to}${d.origin === 'ai' ? ' · Claude\'s draft' : ''}${acct ? ` · ${acct.name}` : ''}`),
+        h('small', null, `To ${to}${d.origin === 'ai' ? ' · Claude\'s draft' : ''}${acct ? ` · ${acct.name}` : ''}${d.attachments.length ? ` · ${plural(d.attachments.length, 'file')}` : ''}`),
         h('small', { class: 'snippet' }, d.body.replace(/\s+/g, ' ').trim().slice(0, 90) || '(empty)')),
       h('span', { class: 'end' }, end, h('small', null, shortDate(d.updatedAt || d.createdAt)))),
     bin);
@@ -104,6 +104,7 @@ export const draft: Screen = {
     append(host, head('Draft', { back: '#/drafts', navigate: ctx.navigate }));
     append(host, [body]);
     let editor: (() => void) | null = null;
+    const note = takeDraftNote(id);
     const view = loadView<Draft | null>(body, {
       navigate: ctx.navigate,
       retryBaseMs: ctx.retryBaseMs,
@@ -116,7 +117,7 @@ export const draft: Screen = {
         if (!d) return null;
         const box = h('div', { class: 'view' });
         editor?.();
-        editor = mountEditor({ host: box, navigate: ctx.navigate, back: '#/drafts', draft: d });
+        editor = mountEditor({ host: box, navigate: ctx.navigate, back: '#/drafts', draft: d, intro: note });
         return box;
       },
     });

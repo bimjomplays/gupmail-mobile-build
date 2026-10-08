@@ -1,5 +1,6 @@
-// Reply (#/thread/<id>/reply): the conversation's waiting draft opens straight in the editor; with none, the owner
-// picks Claude's draft (an optional "what should it say") or a blank reply. Both only make a draft: Claude's comes
+// Reply (#/thread/<id>/reply), the one reply flow (same as the desktop): the conversation's waiting draft opens straight
+// in the editor (where the owner chats to change it, edits it, or sends it); with none, the owner tells Claude what to
+// say (blank = Claude's own draft) or writes a blank reply. Both only make a draft: Claude's comes
 // from POST /v1/messages/:id/draft, a blank one is only saved on the PC once the owner saves it.
 import { api, ApiError, type Address, type Draft, type Message, type ThreadDetail } from '../api.ts';
 import { append, h, replace } from '../dom.ts';
@@ -73,9 +74,9 @@ export const reply: Screen = {
     });
 
     function chooser(box: HTMLElement, t: ThreadDetail, m: Message): void {
-      const instr = h('textarea', { class: 'input', rows: 2, maxlength: 1000, 'aria-label': 'What should Claude say? (optional)', placeholder: 'What should it say? (optional) e.g. Yes, Thursday works' });
+      const instr = h('textarea', { class: 'input', rows: 2, maxlength: 1000, 'aria-label': 'Tell Claude what to say', placeholder: 'Tell Claude what to say… e.g. Yes, Thursday works. Leave it blank and Claude writes its own.' });
       const status = h('div', { 'aria-live': 'polite' });
-      const claudeBtn = h('button', { class: 'btn primary', type: 'button', 'data-act': 'claude' }, icon('sparkle'), 'Let Claude draft it');
+      const claudeBtn = h('button', { class: 'btn primary', type: 'button', 'data-act': 'claude' }, icon('sparkle'), 'Write it');
       const blankBtn = h('button', { class: 'btn', type: 'button', 'data-act': 'blank' }, icon('drafts'), 'Write it myself');
       replace(box,
         h('section', { class: 'card', 'data-chooser': '' },
@@ -83,7 +84,7 @@ export const reply: Screen = {
           h('p', null, h('strong', null, who(m.fromName, m.fromAddr)), ` · ${fullDate(m.date)}`),
           h('p', { class: 'snippet' }, (m.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200))),
         h('section', { class: 'card claude' },
-          h('span', { class: 'k' }, h('span', { class: 'aitag' }, 'Claude'), ' · drafts it in your voice'),
+          h('span', { class: 'k' }, h('span', { class: 'aitag' }, 'Claude'), ' · tell it what to say, or leave it blank for its own draft'),
           instr, claudeBtn),
         blankBtn,
         status,
